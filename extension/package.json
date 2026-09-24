@@ -1,0 +1,163 @@
+{
+  "name": "nattee-grader",
+  "displayName": "Nattee Grader",
+  "description": "Browse NatteeGrader problems, read statements and run test cases without leaving VS Code",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "nattee",
+          "title": "Nattee Grader",
+          "icon": "$(mortar-board)"
+        }
+      ]
+    },
+    "views": {
+      "nattee": [
+        {
+          "id": "nattee.problems",
+          "name": "Problems"
+        },
+        {
+          "id": "nattee.results",
+          "name": "Test Results",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "nattee.problems",
+        "contents": "Sign in to load your problems.\n[Sign in](command:nattee.login)",
+        "when": "!nattee.loggedIn"
+      }
+    ],
+    "commands": [
+      {
+        "command": "nattee.login",
+        "title": "Nattee: Sign In"
+      },
+      {
+        "command": "nattee.logout",
+        "title": "Nattee: Sign Out"
+      },
+      {
+        "command": "nattee.refresh",
+        "title": "Nattee: Refresh Problems",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "nattee.clearCache",
+        "title": "Nattee: Clear Cache (re-download statements and tests)"
+      },
+      {
+        "command": "nattee.openProblem",
+        "title": "Nattee: Open Statement"
+      },
+      {
+        "command": "nattee.createSolution",
+        "title": "Nattee: Create Solution File"
+      },
+      {
+        "command": "nattee.linkFile",
+        "title": "Nattee: Link Current File to Problem"
+      },
+      {
+        "command": "nattee.runTests",
+        "title": "Nattee: Run Tests",
+        "icon": "$(play)"
+      },
+      {
+        "command": "nattee.showStatement",
+        "title": "Nattee: Show Statement for Current File"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "nattee.refresh",
+          "when": "view == nattee.problems",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "nattee.openProblem",
+          "when": "viewItem == problem",
+          "group": "inline"
+        },
+        {
+          "command": "nattee.createSolution",
+          "when": "viewItem == problem"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "nattee.runTests",
+          "when": "nattee.activeFileLinked",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Nattee Grader",
+      "properties": {
+        "nattee.rootUrl": {
+          "type": "string",
+          "default": "https://2190101.nattee.net/",
+          "description": "Grader site URL."
+        },
+        "nattee.hideExams": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide exam problems."
+        },
+        "nattee.defaultExtension": {
+          "type": "string",
+          "default": ".py",
+          "description": "Extension for new solution files (.py, .cpp, .c)."
+        },
+        "nattee.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python command used to run .py solutions."
+        },
+        "nattee.cppCompiler": {
+          "type": "string",
+          "default": "g++",
+          "description": "C++ compiler."
+        },
+        "nattee.cCompiler": {
+          "type": "string",
+          "default": "gcc",
+          "description": "C compiler."
+        },
+        "nattee.runOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the tests automatically every time you save a linked solution file."
+        },
+        "nattee.timeLimitSeconds": {
+          "type": "number",
+          "default": 3,
+          "description": "Per-test time limit."
+        }
+      }
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PoTOsuA7/ice-grader-vscode"
+  },
+  "author": "PoTOsuA7"
+}

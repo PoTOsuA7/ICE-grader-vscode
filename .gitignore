@@ -1,0 +1,11 @@
+/venv
+/__pycache__
+/*.cpp
+/.cph
+.DS_Store
+# course material / private data
+problems/
+.statement_map.json
+.cph/
+*.pyc
+*.vsix
