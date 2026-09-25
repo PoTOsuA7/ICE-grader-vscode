@@ -33,7 +33,8 @@ content_types = '''<?xml version="1.0" encoding="utf-8"?>
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
     z.writestr('[Content_Types].xml', content_types)
     z.writestr('extension.vsixmanifest', manifest)
-    for base, _, files in os.walk(ext_dir):
+    for base, dirs, files in os.walk(ext_dir):
+        dirs[:] = [d for d in dirs if d != 'tests']  # tests are for the repo, not the installed extension
         for f in files:
             p = os.path.join(base, f)
             z.write(p, 'extension/' + os.path.relpath(p, ext_dir).replace(os.sep, '/'))

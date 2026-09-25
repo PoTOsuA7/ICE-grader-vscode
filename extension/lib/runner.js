@@ -7,10 +7,7 @@ const path = require('path');
 
 const MAX_OUTPUT = 1 << 20; // stop collecting after 1 MiB so an infinite printer can't eat memory
 
-// Same leniency as the grader: ignore CRLF, trailing spaces per line, trailing blank lines.
-function normalize(s) {
-  return s.replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '');
-}
+const { normalize } = require('./diff');
 
 function execP(cmd, args, opts) {
   return new Promise((resolve) => {
@@ -51,20 +48,35 @@ async function prepare(file, cfg) {
   throw new Error(`Unsupported file type "${ext}" (supported: .py, .cpp, .c)`);
 }
 
+// Kill the process and everything it started. On Windows the "py" launcher runs python.exe as a child,
+// so killing only the launcher would leave an infinite loop burning CPU.
+function killTree(child) {
+  if (!child.pid) return;
+  if (process.platform === 'win32') {
+    execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+  } else {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  }
+}
+
 function runOne(cmd, args, input, timeoutMs) {
   return new Promise((resolve) => {
     const start = Date.now();
     let out = '', err = '', timedOut = false, done = false;
     // UTF-8 so printing non-ASCII (★, Thai, ...) doesn't crash Python's default Windows codepage
     const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
-    const child = spawn(cmd, args, { windowsHide: true, env });
+    const child = spawn(cmd, args, { windowsHide: true, env, detached: process.platform !== 'win32' });
     const finish = (extra) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       resolve({ stdout: out, stderr: err, timedOut, ms: Date.now() - start, ...extra });
     };
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child);
+      setTimeout(() => finish({}), 1500); // don't hang if a grandchild keeps the pipes open
+    }, timeoutMs);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8'); // don't split multi-byte chars
     child.stdout.on('data', (d) => { if (out.length < MAX_OUTPUT) out += d; });
     child.stderr.on('data', (d) => { if (err.length < MAX_OUTPUT) err += d; });
@@ -95,4 +107,17 @@ async function runTests(file, cases, cfg) {
   }
 }
 
-module.exports = { runTests, normalize };
+// Run once with arbitrary input (no expected output). -> { verdict: 'OK'|'TLE'|'RE', ms, stdout, stderr }
+async function runSingle(file, input, cfg) {
+  const prep = await prepare(file, cfg);
+  try {
+    const r = await runOne(prep.cmd, prep.args, input, cfg.timeoutMs);
+    if (r.spawnError) throw new Error(`Could not start "${prep.cmd}": ${r.spawnError}`);
+    const verdict = r.timedOut ? 'TLE' : r.code !== 0 ? 'RE' : 'OK';
+    return { verdict, ms: r.ms, stdout: r.stdout, stderr: r.stderr };
+  } finally {
+    prep.cleanup();
+  }
+}
+
+module.exports = { runTests, runSingle, normalize };

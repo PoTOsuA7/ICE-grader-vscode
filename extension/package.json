@@ -2,7 +2,7 @@
   "name": "nattee-grader",
   "displayName": "Nattee Grader",
   "description": "Browse NatteeGrader problems, read statements and run test cases without leaving VS Code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.90.0"
@@ -79,6 +79,15 @@
       {
         "command": "nattee.showStatement",
         "title": "Nattee: Show Statement for Current File"
+      },
+      {
+        "command": "nattee.submit",
+        "title": "Nattee: Submit to Grader",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "nattee.runOneTest",
+        "title": "Nattee: Run One Test or Custom Input"
       }
     ],
     "menus": {
@@ -103,6 +112,11 @@
       "editor/title": [
         {
           "command": "nattee.runTests",
+          "when": "nattee.activeFileLinked",
+          "group": "navigation"
+        },
+        {
+          "command": "nattee.submit",
           "when": "nattee.activeFileLinked",
           "group": "navigation"
         }
@@ -159,5 +173,8 @@
     "type": "git",
     "url": "https://github.com/PoTOsuA7/ICE-grader-vscode"
   },
-  "author": "PoTOsuA7"
+  "author": "PoTOsuA7",
+  "scripts": {
+    "test": "node --test"
+  }
 }

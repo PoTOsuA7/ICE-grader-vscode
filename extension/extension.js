@@ -3,14 +3,13 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const { GraderClient } = require('./lib/client');
-const { runTests } = require('./lib/runner');
+const { runTests, runSingle } = require('./lib/runner');
+const { localResultsHtml, singleResultHtml, submissionHtml, emptyHtml } = require('./lib/resultsHtml');
 const { statementHtml } = require('./lib/statement');
 
 const EXAM = /(?<![a-z])exam(?![a-z])/i;
 const cfg = () => vscode.workspace.getConfiguration('nattee');
 const safeName = (s) => s.replace(/[^\w\-.]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'problem';
-const clip = (s) => (s.length > 3000 ? s.slice(0, 3000) + ' ... (truncated)' : s);
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function activate(context) {
   const libDir = path.join(context.extensionPath, 'lib');
@@ -79,19 +78,24 @@ function activate(context) {
       if (!el) {
         const groups = [...new Set(problems.map(groupOf))].sort();
         return groups.map((g) => {
+          const inGroup = problems.filter((p) => groupOf(p) === g);
           const item = new vscode.TreeItem(g, vscode.TreeItemCollapsibleState.Collapsed);
           item.groupKey = g;
+          item.description = `${inGroup.filter((p) => p.status === 'solved').length}/${inGroup.length} solved`;
           item.iconPath = new vscode.ThemeIcon('folder');
           return item;
         });
       }
       return problems.filter((p) => groupOf(p) === el.groupKey).sort((a, b) => a.code.localeCompare(b.code)).map((p) => {
         const item = new vscode.TreeItem(p.code, vscode.TreeItemCollapsibleState.None);
-        item.description = p.name.replace(/^\d+_[A-Za-z]+_/, '').replace(/_/g, ' ');
-        item.tooltip = `${p.code}\n${p.name}`;
+        const title = p.name.replace(/^\d+_[A-Za-z]+_/, '').replace(/_/g, ' ');
+        item.description = p.status === 'inprogress' ? `${title} · ${p.score}` : title;
+        item.tooltip = `${p.code}\n${p.name}\n${p.status || 'untried'}${p.status && p.status !== 'untried' ? ` (best score ${p.score})` : ''}`;
         item.contextValue = 'problem';
         item.problem = p;
-        item.iconPath = new vscode.ThemeIcon('file-pdf');
+        item.iconPath = p.status === 'solved' ? new vscode.ThemeIcon('pass-filled', new vscode.ThemeColor('testing.iconPassed'))
+          : p.status === 'inprogress' ? new vscode.ThemeIcon('circle-large-filled', new vscode.ThemeColor('list.warningForeground'))
+            : new vscode.ThemeIcon('circle-large-outline');
         item.command = { command: 'nattee.openProblem', title: 'Open', arguments: [item] };
         return item;
       });
@@ -183,7 +187,7 @@ function activate(context) {
 
   // ---------------------------------------------------------------- results
   let resultsView = null;
-  let resultsHtml = '<body style="font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:8px">Save a linked solution file (or press ▶) to see test results here.</body>';
+  let resultsHtml = emptyHtml();
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('nattee.results', {
     resolveWebviewView(view) {
       resultsView = view;
@@ -192,34 +196,11 @@ function activate(context) {
     },
   }));
 
-  function showResults(p, cases, results) {
-    const passed = results.filter((r) => r.verdict === 'PASS').length;
-    const rows = results.map((r, i) => {
-      const tc = cases[i];
-      const bad = r.verdict !== 'PASS';
-      return `<details ${bad && results.findIndex((x) => x.verdict !== 'PASS') === i ? 'open' : ''}>
-        <summary><span class="v ${r.verdict}">${r.verdict}</span> Test ${i + 1} <span class="ms">${r.ms} ms</span></summary>
-        <div class="grid">
-          <div><h4>Input</h4><pre>${esc(clip(tc.input))}</pre></div>
-          <div><h4>Expected</h4><pre>${esc(clip(tc.output))}</pre></div>
-          <div><h4>Your output</h4><pre>${esc(clip(r.stdout))}</pre></div>
-        </div>${r.stderr ? `<h4>stderr</h4><pre class="err">${esc(clip(r.stderr))}</pre>` : ''}
-      </details>`;
-    }).join('');
-    const html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
-      <style>
-        body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:12px}
-        .sum{font-size:1.2em;margin-bottom:12px} .ms{opacity:.6;margin-left:8px}
-        summary{cursor:pointer;padding:4px 0} .v{display:inline-block;min-width:44px;text-align:center;border-radius:3px;padding:0 6px;color:#fff;font-weight:600}
-        .PASS{background:#2e7d32}.FAIL{background:#c62828}.TLE{background:#ef6c00}.RE{background:#6a1b9a}
-        .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px} pre{background:var(--vscode-textCodeBlock-background);padding:6px;overflow:auto;max-height:240px;margin:0;white-space:pre-wrap;word-break:break-all}
-        .err{color:var(--vscode-errorForeground)} h4{margin:6px 0 2px}
-      </style></head><body>
-      <div class="sum"><b>${esc(p.code)}</b> — ${passed}/${results.length} passed</div>${rows}</body></html>`;
+  function showView(html, description) {
     resultsHtml = html;
     if (resultsView) {
       resultsView.webview.html = html;
-      resultsView.description = `${p.code}: ${passed}/${results.length}`;
+      resultsView.description = description;
       resultsView.show(true);
     } else {
       vscode.commands.executeCommand('nattee.results.focus');
@@ -305,6 +286,12 @@ function activate(context) {
     await showStatement(p, false);
   });
 
+  const runCfg = () => ({
+    pythonPath: cfg().get('pythonPath'), cppCompiler: cfg().get('cppCompiler'), cCompiler: cfg().get('cCompiler'),
+    timeoutMs: cfg().get('timeLimitSeconds') * 1000,
+  });
+  const lastLocal = new Map(); // file -> { source, passed, total }, so submit can say what was tested
+
   async function runActive(auto) {
     const ed = vscode.window.activeTextEditor;
     if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
@@ -321,17 +308,14 @@ function activate(context) {
       const cases = await getTests(p);
       let results;
       try {
-        results = await runTests(ed.document.fileName, cases, {
-          pythonPath: cfg().get('pythonPath'), cppCompiler: cfg().get('cppCompiler'), cCompiler: cfg().get('cCompiler'),
-          timeoutMs: cfg().get('timeLimitSeconds') * 1000,
-        });
+        results = await runTests(ed.document.fileName, cases, runCfg());
       } catch (e) {
-        if (e.details) { vscode.window.showErrorMessage(`Nattee: ${e.message}
-${e.details.slice(0, 400)}`); return; }
+        if (e.details) { vscode.window.showErrorMessage(`Nattee: ${e.message}\n${e.details.slice(0, 400)}`); return; }
         throw e;
       }
-      showResults(p, cases, results);
       const passed = results.filter((r) => r.verdict === 'PASS').length;
+      lastLocal.set(ed.document.fileName, { source: ed.document.getText(), passed, total: results.length });
+      showView(localResultsHtml(p, cases, results), `${p.code}: ${passed}/${results.length}`);
       (passed === results.length ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(
         `${p.code}: ${passed}/${results.length} tests passed`);
     });
@@ -347,12 +331,74 @@ ${e.details.slice(0, 400)}`); return; }
     runActive(true).catch(fail).finally(() => { running = false; });
   }));
 
+  // Run one chosen test, or your own input, and show the output.
+  reg('nattee.runOneTest', async () => {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
+    const p = linkedProblem(ed.document.fileName);
+    const cases = p ? await getTests(p) : [];
+    const items = [
+      ...cases.map((c, i) => ({ label: `Test ${i + 1}`, description: c.input.split('\n')[0].slice(0, 60), kind: 'test', i })),
+      { label: '$(edit) Custom input (type it)', kind: 'typed' },
+      { label: '$(clippy) Custom input (from clipboard)', kind: 'clipboard' },
+    ];
+    const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Which input to run?' });
+    if (!pick) return;
+    let input, expected, title;
+    if (pick.kind === 'test') {
+      input = cases[pick.i].input; expected = cases[pick.i].output; title = `${p.code} test ${pick.i + 1}`;
+    } else if (pick.kind === 'clipboard') {
+      input = await vscode.env.clipboard.readText(); title = 'Custom input (clipboard)';
+    } else {
+      const typed = await vscode.window.showInputBox({ prompt: 'Input for your program (write \\n for a new line)', ignoreFocusOut: true });
+      if (typed === undefined) return;
+      input = typed.replace(/\\n/g, '\n'); title = 'Custom input';
+    }
+    if (!input.endsWith('\n')) input += '\n';
+    await ed.document.save();
+    const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Running...' },
+      () => runSingle(ed.document.fileName, input, runCfg()));
+    showView(singleResultHtml(title, input, expected, r), title);
+  });
+
+  // Sends the file to the real grader. Always asks first; never runs on save.
+  reg('nattee.submit', async () => {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
+    const p = linkedProblem(ed.document.fileName);
+    if (!p) throw new Error('This file is not linked to a problem. Use "Nattee: Link Current File to Problem".');
+    await ed.document.save();
+    const source = ed.document.getText();
+    if (!source.trim()) throw new Error('The file is empty.');
+    await refreshProblems(); // also makes sure the session is still valid before we send anything
+    const local = lastLocal.get(ed.document.fileName);
+    const localNote = !local || local.source !== source ? 'Local tests have not been run on this version.'
+      : `Local tests: ${local.passed}/${local.total} passed.`;
+    const choice = await vscode.window.showWarningMessage(
+      `Submit ${path.basename(ed.document.fileName)} to the grader for ${p.code}?`,
+      { modal: true, detail: `${localNote}\nThis sends your code to ${new URL(cfg().get('rootUrl')).host} and counts as an attempt.` },
+      'Submit');
+    if (choice !== 'Submit') return;
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Submitting ${p.code}...` }, async () => {
+      const c = await ensureClient();
+      const { id } = await c.submit(p.id, source, path.extname(ed.document.fileName));
+      const show = (g) => showView(submissionHtml(p, id, g), `${p.code}: submitted #${id}`);
+      show({ tests: [], status: 'queued', done: false });
+      const grade = await c.waitForGrade(id, { onUpdate: show });
+      show(grade);
+      await refreshProblems();
+      const msg = grade.timedOut ? `${p.code}: submitted #${id}, still grading - check the grader site.`
+        : `${p.code}: ${grade.points}/${grade.max} points (submission #${id})`;
+      (grade.points === grade.max ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(msg);
+    });
+  });
+
   // ------------------------------------------------------------------ start
   loadCachedProblems();
   updateEditorState();
   context.secrets.get('nattee.uid').then(async (uid) => {
     await setLoggedIn(!!uid);
-    if (uid && !problems.length) refreshProblems().catch(fail);
+    if (uid) refreshProblems().catch(() => {}); // keeps the solved/score marks current
     updateEditorState();
     tree.fire();
   });
