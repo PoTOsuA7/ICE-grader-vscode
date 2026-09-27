@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { localResultsHtml, singleResultHtml, submissionHtml, diffHtml } = require('../lib/resultsHtml');
+const { localResultsHtml, singleResultHtml, submissionHtml, explanationHtml, diffHtml } = require('../lib/resultsHtml');
 
 test('user text is escaped in results', () => {
   const html = localResultsHtml({ code: 'P<1>' }, [{ input: '<script>alert(1)</script>', output: 'a&b' }],
@@ -31,4 +31,18 @@ test('submission view handles grading, done and timed-out states', () => {
   const done = submissionHtml(p, 5, { tests: [{ n: 1, total: 1, label: 'Correct', letter: 'P' }], status: 'done', done: true, points: 100, max: 100, runtime: '0.01 s' });
   assert.ok(done.includes('100 / 100 points') && done.includes('tile ok'));
   assert.ok(submissionHtml(p, 5, { tests: [], status: 'x', done: false, timedOut: true }).includes('Still grading'));
+});
+
+test('explanation view escapes the model text and renders code spans/fences safely', () => {
+  const html = explanationHtml('Test 1 explained', null, 'Your `<script>` prints wrong.\n\n```\nx = 1\n```');
+  assert.ok(!html.includes('<script>prints') && !html.includes('<script>alert'));
+  assert.ok(html.includes('&lt;script&gt;'));
+  assert.ok(html.includes('<code>&lt;script&gt;</code>'));
+  assert.ok(html.includes('<pre>x = 1</pre>'));
+  assert.ok(html.includes('will not write the fix for you'));
+});
+
+test('explanation view shows the stale-file note when given one', () => {
+  const html = explanationHtml('t', 'Note: edited since this ran.', 'text');
+  assert.ok(html.includes('Note: edited since this ran.'));
 });

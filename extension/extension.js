@@ -4,8 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const { GraderClient } = require('./lib/client');
 const { runTests, runSingle } = require('./lib/runner');
-const { localResultsHtml, singleResultHtml, submissionHtml, emptyHtml } = require('./lib/resultsHtml');
+const { localResultsHtml, singleResultHtml, submissionHtml, explanationHtml, emptyHtml } = require('./lib/resultsHtml');
 const { statementHtml } = require('./lib/statement');
+const { explainFailures, MAX_FAILURES } = require('./lib/aiExplain');
 
 const EXAM = /(?<![a-z])exam(?![a-z])/i;
 const cfg = () => vscode.workspace.getConfiguration('nattee');
@@ -166,6 +167,7 @@ function activate(context) {
     const p = ed && ed.document.uri.scheme === 'file' ? linkedProblem(ed.document.fileName) : null;
     vscode.commands.executeCommand('setContext', 'nattee.activeFileLinked', !!p);
     if (p) { status.text = `$(play) Run ${p.code}`; status.show(); } else status.hide();
+    updateFailureContext();
     return p;
   }
 
@@ -290,7 +292,13 @@ function activate(context) {
     pythonPath: cfg().get('pythonPath'), cppCompiler: cfg().get('cppCompiler'), cCompiler: cfg().get('cCompiler'),
     timeoutMs: cfg().get('timeLimitSeconds') * 1000,
   });
-  const lastLocal = new Map(); // file -> { source, passed, total }, so submit can say what was tested
+  const lastRun = new Map(); // file -> { source, cases, results }, for submit's note and AI Explain
+
+  function updateFailureContext() {
+    const ed = vscode.window.activeTextEditor;
+    const run = ed && lastRun.get(ed.document.fileName);
+    vscode.commands.executeCommand('setContext', 'nattee.hasFailure', !!run && run.results.some((r) => r.verdict !== 'PASS'));
+  }
 
   async function runActive(auto) {
     const ed = vscode.window.activeTextEditor;
@@ -314,7 +322,8 @@ function activate(context) {
         throw e;
       }
       const passed = results.filter((r) => r.verdict === 'PASS').length;
-      lastLocal.set(ed.document.fileName, { source: ed.document.getText(), passed, total: results.length });
+      lastRun.set(ed.document.fileName, { source: ed.document.getText(), cases, results });
+      updateFailureContext();
       showView(localResultsHtml(p, cases, results), `${p.code}: ${passed}/${results.length}`);
       (passed === results.length ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(
         `${p.code}: ${passed}/${results.length} tests passed`);
@@ -371,9 +380,9 @@ function activate(context) {
     const source = ed.document.getText();
     if (!source.trim()) throw new Error('The file is empty.');
     await refreshProblems(); // also makes sure the session is still valid before we send anything
-    const local = lastLocal.get(ed.document.fileName);
+    const local = lastRun.get(ed.document.fileName);
     const localNote = !local || local.source !== source ? 'Local tests have not been run on this version.'
-      : `Local tests: ${local.passed}/${local.total} passed.`;
+      : `Local tests: ${local.results.filter((r) => r.verdict === 'PASS').length}/${local.results.length} passed.`;
     const choice = await vscode.window.showWarningMessage(
       `Submit ${path.basename(ed.document.fileName)} to the grader for ${p.code}?`,
       { modal: true, detail: `${localNote}\nThis sends your code to ${new URL(cfg().get('rootUrl')).host} and counts as an attempt.` },
@@ -391,6 +400,68 @@ function activate(context) {
         : `${p.code}: ${grade.points}/${grade.max} points (submission #${id})`;
       (grade.points === grade.max ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(msg);
     });
+  });
+
+  // ------------------------------------------------------------- AI explain
+  const KEY_PROMPT = 'Gemini API key (free from aistudio.google.com) - used only for AI explanations, kept in VS Code\'s secret storage';
+
+  async function ensureGeminiKey() {
+    let key = await context.secrets.get('nattee.geminiApiKey');
+    if (key) return key;
+    key = await vscode.window.showInputBox({ prompt: KEY_PROMPT, password: true, ignoreFocusOut: true });
+    if (!key) return null;
+    await context.secrets.store('nattee.geminiApiKey', key);
+    return key;
+  }
+
+  reg('nattee.setApiKey', async () => {
+    const key = await vscode.window.showInputBox({ prompt: KEY_PROMPT, password: true, ignoreFocusOut: true });
+    if (!key) return;
+    await context.secrets.store('nattee.geminiApiKey', key);
+    vscode.window.showInformationMessage('Nattee: Gemini API key saved.');
+  });
+
+  reg('nattee.clearApiKey', async () => {
+    await context.secrets.delete('nattee.geminiApiKey');
+    vscode.window.showInformationMessage('Nattee: Gemini API key removed.');
+  });
+
+  // Explains the failing tests of the last run with Gemini, using the student's own API key.
+  // Sends the first few failures together (they usually share one bug), so there's nothing to
+  // pick. Only runs when this command is invoked, never automatically.
+  reg('nattee.explainFailure', async () => {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
+    const run = lastRun.get(ed.document.fileName);
+    const failing = run ? run.results.map((r, i) => ({ r, i })).filter((x) => x.r.verdict !== 'PASS') : [];
+    if (!failing.length) throw new Error('No failing test to explain. Run the tests first (▶) - if they all pass, there is nothing to explain.');
+
+    const apiKey = await ensureGeminiKey();
+    if (!apiKey) return;
+
+    const p = linkedProblem(ed.document.fileName);
+    const stale = run.source !== ed.document.getText();
+    const context_ = {
+      code: run.source,
+      language: path.extname(ed.document.fileName).slice(1) || 'text',
+      problem: p,
+      totalFailing: failing.length,
+      failures: failing.slice(0, MAX_FAILURES).map(({ r, i }) => ({
+        n: i + 1, testInput: run.cases[i].input, expected: run.cases[i].output,
+        actual: r.stdout, stderr: r.stderr, verdict: r.verdict,
+      })),
+    };
+    const shown = context_.failures.map((f) => f.n);
+    const model = cfg().get('geminiModel');
+    const { text, model: answeredBy } = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Asking Gemini why test${shown.length > 1 ? 's' : ''} ${shown.join(', ')} fail${shown.length > 1 ? '' : 's'}...` },
+      () => explainFailures(apiKey, [model, cfg().get('geminiFallbackModel')], context_));
+    const more = failing.length > shown.length ? ` (${failing.length} failing, first ${shown.length} sent)` : '';
+    const title = `${p ? p.code + ' — ' : ''}Test${shown.length > 1 ? 's' : ''} ${shown.join(', ')} explained${more}`;
+    const notes = [];
+    if (stale) notes.push('Note: you have edited the file since the tests ran - the explanation is for the version you last ran.');
+    if (answeredBy !== model) notes.push(`${model} was overloaded, so ${answeredBy} answered instead.`);
+    showView(explanationHtml(title, notes.join(' ') || null, text), `AI explanation (${answeredBy})`);
   });
 
   // ------------------------------------------------------------------ start

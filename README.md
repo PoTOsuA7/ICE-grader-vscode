@@ -14,8 +14,18 @@ Everything from the NatteeGrader website inside VS Code, so you never alt-tab:
 - **Submit to the grader** without leaving VS Code (`Nattee: Submit to Grader`, the cloud button). It always asks
   for confirmation first, never submits on save, then shows the grader's points and per-test verdicts live.
 - **Test Results** panel in the sidebar keeps results visible next to the statement.
-- Test cases are downloaded straight from the grader and cached locally. Credentials are kept in VS Code's
-  secret storage, not a temp file.
+- **Explain a failure with AI** (`Nattee: Explain Test Failure (AI)`, the ✨ button): sends your code and the
+  failing tests (up to 3 at once) to Google's Gemini, using **your own Gemini API key**, and shows why it fails. It's told to explain
+  the bug, not to hand back corrected code - the point is to help you fix it yourself, not to do the assignment
+  for you. **Check your course's policy on AI assistance before using this.**
+  - Get a free key at [aistudio.google.com](https://aistudio.google.com) → Get API key, then run
+    `Nattee: Set Gemini API Key`. A Gemini app subscription (e.g. Google AI Pro) is separate from the API and
+    isn't needed. School Google accounts may have AI Studio switched off; a personal Google account works.
+  - On the free tier Google may use what you send to improve its products. Nothing is sent until you run
+    the command. The model is set by `nattee.geminiModel` (default `gemini-3.8-flash`). If Google says it's
+    overloaded, the extension retries twice and then asks `nattee.geminiFallbackModel` (default `gemini-3.5-flash`).
+- Test cases are downloaded straight from the grader and cached locally. Credentials (grader and Gemini key) are
+  kept in VS Code's secret storage, not a temp file.
 
 ## Install (local)
 Run `python tools/build_vsix.py` then `code --install-extension nattee-grader.vsix`, and reload VS Code
@@ -27,7 +37,7 @@ Run `python tools/build_vsix.py` then `code --install-extension nattee-grader.vs
    Or open any file and run **Nattee: Link Current File to Problem**.
 3. Click ▶ to run the tests, or just save the file: tests run automatically on save (`nattee.runOnSave`).
 
-Settings (`nattee.*`): `rootUrl`, `hideExams`, `defaultExtension`, `pythonPath`, `cppCompiler`, `cCompiler`, `timeLimitSeconds`.
+Settings (`nattee.*`): `rootUrl`, `hideExams`, `defaultExtension`, `pythonPath`, `cppCompiler`, `cCompiler`, `timeLimitSeconds`, `runOnSave`, `geminiModel`, `geminiFallbackModel`.
 
 ## Layout
 - `extension/` — the VS Code extension (plain JS, no build step). `lib/client.js` talks to the grader,

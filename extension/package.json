@@ -2,7 +2,7 @@
   "name": "nattee-grader",
   "displayName": "Nattee Grader",
   "description": "Browse NatteeGrader problems, read statements and run test cases without leaving VS Code",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.90.0"
@@ -88,6 +88,19 @@
       {
         "command": "nattee.runOneTest",
         "title": "Nattee: Run One Test or Custom Input"
+      },
+      {
+        "command": "nattee.explainFailure",
+        "title": "Nattee: Explain Test Failure (AI)",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "nattee.setApiKey",
+        "title": "Nattee: Set Gemini API Key"
+      },
+      {
+        "command": "nattee.clearApiKey",
+        "title": "Nattee: Clear Gemini API Key"
       }
     ],
     "menus": {
@@ -118,6 +131,11 @@
         {
           "command": "nattee.submit",
           "when": "nattee.activeFileLinked",
+          "group": "navigation"
+        },
+        {
+          "command": "nattee.explainFailure",
+          "when": "nattee.hasFailure",
           "group": "navigation"
         }
       ]
@@ -164,6 +182,16 @@
           "type": "number",
           "default": 3,
           "description": "Per-test time limit."
+        },
+        "nattee.geminiModel": {
+          "type": "string",
+          "default": "gemini-3.8-flash",
+          "description": "Gemini model used by 'Explain Test Failure (AI)'. Needs a Gemini API key from aistudio.google.com (Nattee: Set Gemini API Key)."
+        },
+        "nattee.geminiFallbackModel": {
+          "type": "string",
+          "default": "gemini-3.5-flash",
+          "description": "Gemini model tried if nattee.geminiModel is overloaded (HTTP 503). Leave empty to disable."
         }
       }
     }

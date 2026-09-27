@@ -21,6 +21,8 @@ const STYLE = `
   .tiles{display:flex;flex-wrap:wrap;gap:3px;margin:6px 0}
   .tile{width:22px;text-align:center;border-radius:3px;color:#fff;font-weight:600;font-size:.85em}
   .tile.ok{background:#2e7d32}.tile.bad{background:#c62828}
+  .ai p{margin:6px 0} .ai code{background:var(--vscode-textCodeBlock-background);padding:1px 4px;border-radius:3px}
+  .ai pre{background:var(--vscode-textCodeBlock-background);padding:8px;overflow:auto;border-radius:4px}
 `;
 
 const page = (body) => `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';"><style>${STYLE}</style></head><body>${body}</body></html>`;
@@ -94,4 +96,30 @@ function submissionHtml(problem, id, g) {
 
 const emptyHtml = () => page('Save a linked solution file (or press ▶) to see test results here.');
 
-module.exports = { localResultsHtml, singleResultHtml, submissionHtml, emptyHtml, diffHtml, esc };
+// Minimal, safe formatting for the model's plain-text reply: escape first, then wrap
+// ``` fences and `code` spans and split into paragraphs. Never trusts the text as HTML.
+// Fenced code is pulled out before paragraph/newline handling (as a placeholder) so its
+// own newlines aren't turned into <br>, then spliced back in.
+function mdLite(text) {
+  const blocks = [];
+  const withPlaceholders = esc(text).replace(/```[\w+-]*\n?([\s\S]*?)```/g, (_, code) => {
+    blocks.push(`<pre>${code.replace(/\n$/, '')}</pre>`);
+    return `\u0000${blocks.length - 1}\u0000`;
+  });
+  const html = withPlaceholders
+    .split(/\n{2,}/)
+    .map((p) => `<p>${p.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>')}</p>`)
+    .join('');
+  return html.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[+i]);
+}
+
+// An AI explanation of a test failure (see lib/aiExplain.js). `note` is an optional warning
+// (e.g. the file was edited since this run), shown above the explanation.
+function explanationHtml(title, note, text) {
+  return page(`<div class="sum">✨ ${esc(title)}</div>
+    ${note ? `<div class="hint">${esc(note)}</div>` : ''}
+    <div class="ai">${mdLite(text)}</div>
+    <div class="hint" style="margin-top:12px">AI explanations can be wrong, and this one only explains the bug - it will not write the fix for you.</div>`);
+}
+
+module.exports = { localResultsHtml, singleResultHtml, submissionHtml, explanationHtml, emptyHtml, diffHtml, esc };
