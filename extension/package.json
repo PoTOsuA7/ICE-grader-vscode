@@ -2,7 +2,7 @@
   "name": "nattee-grader",
   "displayName": "Nattee Grader",
   "description": "Browse NatteeGrader problems, read statements and run test cases without leaving VS Code",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "local",
   "engines": {
     "vscode": "^1.90.0"
@@ -157,6 +157,11 @@
           "type": "string",
           "default": ".py",
           "description": "Extension for new solution files (.py, .cpp, .c)."
+        },
+        "nattee.organizeByChapter": {
+          "type": "boolean",
+          "default": true,
+          "description": "Put new solution files in a folder per chapter (e.g. 05_List/05_List_15.py) instead of the workspace root. An existing file for the problem is reused wherever it is."
         },
         "nattee.pythonPath": {
           "type": "string",

@@ -7,10 +7,10 @@ const { runTests, runSingle } = require('./lib/runner');
 const { localResultsHtml, singleResultHtml, submissionHtml, explanationHtml, emptyHtml } = require('./lib/resultsHtml');
 const { statementHtml } = require('./lib/statement');
 const { explainFailures, MAX_FAILURES } = require('./lib/aiExplain');
+const { safeName, chapterOf, solutionPath } = require('./lib/layout');
 
 const EXAM = /(?<![a-z])exam(?![a-z])/i;
 const cfg = () => vscode.workspace.getConfiguration('nattee');
-const safeName = (s) => s.replace(/[^\w\-.]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'problem';
 
 function activate(context) {
   const libDir = path.join(context.extensionPath, 'lib');
@@ -69,7 +69,7 @@ function activate(context) {
     tree.fire();
   }
 
-  const groupOf = (p) => p.code.split('_').slice(0, 2).join('_') || p.code;
+  const groupOf = (p) => chapterOf(p.code);
 
   class ProblemTree {
     constructor() { this._e = new vscode.EventEmitter(); this.onDidChangeTreeData = this._e.event; }
@@ -259,12 +259,20 @@ function activate(context) {
   reg('nattee.createSolution', async (item) => {
     const p = item && item.problem ? item.problem : await pickProblem();
     if (!p) return;
-    let folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+    const ed = vscode.window.activeTextEditor;
+    const folder = (ed && vscode.workspace.getWorkspaceFolder(ed.document.uri))
+      || (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0]);
     if (!folder) throw new Error('Open a folder in VS Code first.');
     let ext = cfg().get('defaultExtension');
     if (!ext.startsWith('.')) ext = '.' + ext;
-    const file = path.join(folder.uri.fsPath, `${safeName(p.code)}${ext}`);
-    if (!fs.existsSync(file)) fs.writeFileSync(file, '');
+    // Reuse a solution already in the workspace (any folder) rather than making a second copy.
+    const [existing] = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, `**/${safeName(p.code)}${ext}`), '**/{node_modules,.git}/**', 1);
+    const file = existing ? existing.fsPath : solutionPath(folder.uri.fsPath, p.code, ext, cfg().get('organizeByChapter'));
+    if (!fs.existsSync(file)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '');
+    }
     await setLink(file, p.id);
     await vscode.window.showTextDocument(vscode.Uri.file(file));
     updateEditorState();

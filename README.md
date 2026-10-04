@@ -33,11 +33,13 @@ Run `python tools/build_vsix.py` then `code --install-extension nattee-grader.vs
 
 ## Use
 1. Open the **Nattee Grader** icon in the activity bar → **Sign in**.
-2. Right-click a problem → **Create Solution File** (creates `<code>.py` in your workspace, links it, shows the statement).
+2. Right-click a problem → **Create Solution File**. It creates `<chapter>/<code>.py` in your workspace
+   (e.g. `05_List/05_List_15.py`), links it and shows the statement. If a file with that name already exists
+   anywhere in the workspace it opens that one instead. Set `nattee.organizeByChapter` to `false` to keep files flat.
    Or open any file and run **Nattee: Link Current File to Problem**.
 3. Click ▶ to run the tests, or just save the file: tests run automatically on save (`nattee.runOnSave`).
 
-Settings (`nattee.*`): `rootUrl`, `hideExams`, `defaultExtension`, `pythonPath`, `cppCompiler`, `cCompiler`, `timeLimitSeconds`, `runOnSave`, `geminiModel`, `geminiFallbackModel`.
+Settings (`nattee.*`): `rootUrl`, `hideExams`, `defaultExtension`, `organizeByChapter`, `pythonPath`, `cppCompiler`, `cCompiler`, `timeLimitSeconds`, `runOnSave`, `geminiModel`, `geminiFallbackModel`.
 
 ## Layout
 - `extension/` — the VS Code extension (plain JS, no build step). `lib/client.js` talks to the grader,
