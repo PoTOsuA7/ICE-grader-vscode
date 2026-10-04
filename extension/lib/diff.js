@@ -32,4 +32,12 @@ function firstDifference(expected, actual) {
 // Make whitespace visible so "Hello  Python." vs "Hello Python." can be seen.
 const visible = (s) => s.replace(/ /g, '·').replace(/\t/g, '→').replace(/\r/g, '␍');
 
-module.exports = { normLines, normalize, firstDifference, visible };
+// What to compare for a test. When only the first part of the expected output is known (partialOutput),
+// check the complete lines of that part against the same number of lines of the program's output.
+function comparedOutputs(tc, actual) {
+  if (!tc.partialOutput) return { expected: tc.output, actual };
+  const known = normLines(tc.output).slice(0, -1); // the last visible line may be cut mid-way
+  return { expected: known.join('\n'), actual: normLines(actual).slice(0, known.length).join('\n') };
+}
+
+module.exports = { normLines, normalize, firstDifference, visible, comparedOutputs };

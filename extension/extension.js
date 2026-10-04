@@ -119,7 +119,11 @@ function activate(context) {
 
   async function getTests(p) {
     const file = path.join(problemDir(p.id), 'tests.json');
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* not cached yet */ }
+    try {
+      const cached = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // Older versions could save a grader web page as the test when downloads were blocked; fetch those again.
+      if (!cached.some((c) => /^\s*<!DOCTYPE html/i.test(c.input) && /^\s*<!DOCTYPE html/i.test(c.output))) return cached;
+    } catch { /* not cached yet */ }
     const cases = await withClient((c) => c.fetchTestcases(p.id));
     fs.mkdirSync(problemDir(p.id), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(cases));
@@ -301,11 +305,17 @@ function activate(context) {
     timeoutMs: cfg().get('timeLimitSeconds') * 1000,
   });
   const lastRun = new Map(); // file -> { source, cases, results }, for submit's note and AI Explain
+  const isFailure = (r) => r.verdict !== 'PASS' && r.verdict !== 'SKIP';
+  const tally = (results) => {
+    const skipped = results.filter((r) => r.verdict === 'SKIP').length;
+    const passed = results.filter((r) => r.verdict === 'PASS').length;
+    return { passed, ran: results.length - skipped, text: `${passed}/${results.length - skipped} passed${skipped ? ` (${skipped} skipped)` : ''}` };
+  };
 
   function updateFailureContext() {
     const ed = vscode.window.activeTextEditor;
     const run = ed && lastRun.get(ed.document.fileName);
-    vscode.commands.executeCommand('setContext', 'nattee.hasFailure', !!run && run.results.some((r) => r.verdict !== 'PASS'));
+    vscode.commands.executeCommand('setContext', 'nattee.hasFailure', !!run && run.results.some(isFailure));
   }
 
   async function runActive(auto) {
@@ -329,12 +339,12 @@ function activate(context) {
         if (e.details) { vscode.window.showErrorMessage(`Nattee: ${e.message}\n${e.details.slice(0, 400)}`); return; }
         throw e;
       }
-      const passed = results.filter((r) => r.verdict === 'PASS').length;
+      const t = tally(results);
       lastRun.set(ed.document.fileName, { source: ed.document.getText(), cases, results });
       updateFailureContext();
-      showView(localResultsHtml(p, cases, results), `${p.code}: ${passed}/${results.length}`);
-      (passed === results.length ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(
-        `${p.code}: ${passed}/${results.length} tests passed`);
+      showView(localResultsHtml(p, cases, results), `${p.code}: ${t.passed}/${t.ran}`);
+      (t.passed === t.ran ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(
+        `${p.code}: ${t.text.replace('passed', 'tests passed')}`);
     });
   }
 
@@ -363,7 +373,10 @@ function activate(context) {
     if (!pick) return;
     let input, expected, title;
     if (pick.kind === 'test') {
-      input = cases[pick.i].input; expected = cases[pick.i].output; title = `${p.code} test ${pick.i + 1}`;
+      const tc = cases[pick.i];
+      if (tc.partialInput) throw new Error(`The grader only shows the start of test ${pick.i + 1}'s input, so it can't be run here.`);
+      input = tc.input; title = `${p.code} test ${pick.i + 1}`;
+      if (tc.partialOutput) title += ' (expected output too long to check here)'; else expected = tc.output;
     } else if (pick.kind === 'clipboard') {
       input = await vscode.env.clipboard.readText(); title = 'Custom input (clipboard)';
     } else {
@@ -390,7 +403,7 @@ function activate(context) {
     await refreshProblems(); // also makes sure the session is still valid before we send anything
     const local = lastRun.get(ed.document.fileName);
     const localNote = !local || local.source !== source ? 'Local tests have not been run on this version.'
-      : `Local tests: ${local.results.filter((r) => r.verdict === 'PASS').length}/${local.results.length} passed.`;
+      : `Local tests: ${tally(local.results).text}.`;
     const choice = await vscode.window.showWarningMessage(
       `Submit ${path.basename(ed.document.fileName)} to the grader for ${p.code}?`,
       { modal: true, detail: `${localNote}\nThis sends your code to ${new URL(cfg().get('rootUrl')).host} and counts as an attempt.` },
@@ -441,7 +454,7 @@ function activate(context) {
     const ed = vscode.window.activeTextEditor;
     if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
     const run = lastRun.get(ed.document.fileName);
-    const failing = run ? run.results.map((r, i) => ({ r, i })).filter((x) => x.r.verdict !== 'PASS') : [];
+    const failing = run ? run.results.map((r, i) => ({ r, i })).filter((x) => isFailure(x.r)) : [];
     if (!failing.length) throw new Error('No failing test to explain. Run the tests first (▶) - if they all pass, there is nothing to explain.');
 
     const apiKey = await ensureGeminiKey();

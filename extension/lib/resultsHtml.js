@@ -1,6 +1,6 @@
 'use strict';
 // HTML for the "Test Results" sidebar view. Pure functions (no VS Code API) so they can be unit-tested.
-const { firstDifference, visible } = require('./diff');
+const { firstDifference, visible, comparedOutputs } = require('./diff');
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const clip = (s) => (s.length > 3000 ? s.slice(0, 3000) + ' ... (truncated)' : s);
@@ -10,7 +10,7 @@ const STYLE = `
   .sum{font-size:1.15em;margin-bottom:10px} .ms{opacity:.6;margin-left:8px}
   summary{cursor:pointer;padding:4px 0}
   .v{display:inline-block;min-width:44px;text-align:center;border-radius:3px;padding:0 6px;color:#fff;font-weight:600}
-  .PASS,.OK{background:#2e7d32}.FAIL{background:#c62828}.TLE{background:#ef6c00}.RE{background:#6a1b9a}
+  .PASS,.OK{background:#2e7d32}.FAIL{background:#c62828}.TLE{background:#ef6c00}.RE{background:#6a1b9a}.SKIP{background:#616161}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px}
   pre{background:var(--vscode-textCodeBlock-background);padding:6px;overflow:auto;max-height:240px;margin:0;white-space:pre-wrap;word-break:break-all}
   .err{color:var(--vscode-errorForeground)} h4{margin:6px 0 2px}
@@ -48,17 +48,23 @@ function diffHtml(expected, actual) {
     ${d.spacingOnly ? '<div class="hint">Only the spacing differs. Spaces inside a line (shown as ·) must match exactly; only trailing spaces are ignored.</div>' : ''}</div>`;
 }
 
-// results: from runTests(); cases: [{input, output}]
+const SKIP_NOTE = '<div class="hint">The grader only shows the start of this test\'s input, so it can\'t be run here. Submit to check it.</div>';
+const PARTIAL_NOTE = '<div class="hint">The grader only shows the start of the expected output, so only those lines were checked.</div>';
+
+// results: from runTests(); cases: [{input, output, partialInput?, partialOutput?}]
 function localResultsHtml(problem, cases, results) {
   const passed = results.filter((r) => r.verdict === 'PASS').length;
-  const firstBad = results.findIndex((r) => r.verdict !== 'PASS');
+  const skipped = results.filter((r) => r.verdict === 'SKIP').length;
+  const firstBad = results.findIndex((r) => r.verdict !== 'PASS' && r.verdict !== 'SKIP');
   const rows = results.map((r, i) => {
     const tc = cases[i];
-    const extra = r.verdict === 'FAIL' ? diffHtml(tc.output, r.stdout)
-      : r.verdict === 'TLE' ? '<div class="diff"><b>Time limit exceeded.</b> Your program did not finish in time.</div>' : '';
+    const cmp = comparedOutputs(tc, r.stdout);
+    const extra = r.verdict === 'FAIL' ? diffHtml(cmp.expected, cmp.actual)
+      : r.verdict === 'TLE' ? '<div class="diff"><b>Time limit exceeded.</b> Your program did not finish in time.</div>'
+        : r.verdict === 'SKIP' ? SKIP_NOTE : '';
     return `<details ${i === firstBad ? 'open' : ''}>
       <summary><span class="v ${r.verdict}">${r.verdict}</span> Test ${i + 1} <span class="ms">${r.ms} ms</span></summary>
-      ${extra}
+      ${extra}${tc.partialOutput && r.verdict !== 'SKIP' ? PARTIAL_NOTE : ''}
       <div class="grid">
         <div><h4>Input</h4><pre>${esc(clip(tc.input))}</pre></div>
         <div><h4>Expected</h4><pre>${esc(clip(tc.output))}</pre></div>
@@ -66,7 +72,7 @@ function localResultsHtml(problem, cases, results) {
       </div>${r.stderr ? `<h4>stderr</h4><pre class="err">${esc(clip(r.stderr))}</pre>` : ''}
     </details>`;
   }).join('');
-  return page(`<div class="sum"><b>${esc(problem.code)}</b> — ${passed}/${results.length} passed</div>${rows}`);
+  return page(`<div class="sum"><b>${esc(problem.code)}</b> — ${passed}/${results.length - skipped} passed${skipped ? ` <span class="ms">(${skipped} skipped)</span>` : ''}</div>${rows}`);
 }
 
 // one run with a chosen test's input or custom input; expected is optional

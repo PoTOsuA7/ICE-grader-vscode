@@ -73,7 +73,37 @@ function parseSubmitForm(html) {
   return { token: token ? decodeEntities(token[1]) : null, problemId: pid ? pid[1] : null, languages };
 }
 
-const LANGUAGE_PATTERNS = { '.py': /python/i, '.cpp': /c\+\+|cpp/i, '.c': /^c$|^c\s|ansi c/i };
+const UNITS = { byte: 1, bytes: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3 };
+const toBytes = (num, unit) => parseFloat(num.replace(/,/g, '')) * UNITS[unit.toLowerCase()];
+
+// testcases/show_problem/ID -> [{id, input, output, inputCut, outputCut}]
+// The page shows each file in a textarea, capped (e.g. "Showing the first 2 KB of each file"), with its real
+// size next to it. A file is "cut" when the size says there is more than the textarea holds.
+function parseTestcasePage(html) {
+  const capM = /Showing the first ([\d.,]+)\s*(Bytes?|KB|MB)/i.exec(html);
+  const cap = capM ? toBytes(capM[1], capM[2]) : Infinity;
+  const panes = html.split(/<div class='tab-pane[^']*' id='tc(\d+)'/);
+  const cases = [];
+  for (let i = 1; i < panes.length; i += 2) {
+    const files = [...panes[i + 1].matchAll(
+      /<span class='text-secondary small'>([\d.,]+)\s*(Bytes?|KB|MB|GB)<\/span>[\s\S]*?<textarea[^>]*>([\s\S]*?)<\/textarea>/gi)]
+      .map(([, num, unit, raw]) => {
+        let text = decodeEntities(raw);
+        const size = toBytes(num, unit);
+        const exact = /^bytes?$/i.test(unit);
+        // Some templates put a newline right after <textarea> that isn't part of the file.
+        if (exact && text.startsWith('\n') && Buffer.byteLength(text) === size + 1) text = text.slice(1);
+        const shown = Buffer.byteLength(text);
+        const cut = exact ? shown < size : size > shown * 1.05 || (shown >= cap - 8 && size >= cap);
+        return { text, cut };
+      });
+    if (files.length < 2) continue;
+    cases.push({ id: panes[i], input: files[0].text, output: files[1].text, inputCut: files[0].cut, outputCut: files[1].cut });
+  }
+  return cases;
+}
+
+const LANGUAGE_PATTERNS ={ '.py': /python/i, '.cpp': /c\+\+|cpp/i, '.c': /^c$|^c\s|ansi c/i };
 
 class GraderClient {
   constructor(rootUrl) {
@@ -155,19 +185,28 @@ class GraderClient {
     return { data: Buffer.from(await res.arrayBuffer()), ext: ext.toLowerCase() };
   }
 
-  // -> [{input, output}] exactly as the grader stores them
+  // A test file via its download link, or null when the grader doesn't allow downloads
+  // (it then redirects to a normal page instead of sending the file).
+  async _download(id, kind) {
+    const res = await this._request(new URL(`testcases/${id}/${kind}`, this.root).href);
+    if (!res.ok || /text\/html/i.test(res.headers.get('content-type') || '')) return null;
+    return res.text();
+  }
+
+  // -> [{input, output, partialInput?, partialOutput?}]. Read from the test case page; a file cut off there
+  // is downloaded in full when the grader allows it, otherwise kept as the visible part and flagged partial.
   async fetchTestcases(problemId) {
     const html = await this._getText(`testcases/show_problem/${problemId}`);
-    const ids = [...html.matchAll(/id='tc(\d+)'/g)].map((m) => m[1]);
-    if (!ids.length) throw new Error('No test cases visible for this problem (not published, or session expired)');
+    const page = parseTestcasePage(html);
+    if (!page.length) throw new Error('No test cases visible for this problem (not published, session expired, or the page layout changed)');
     const cases = [];
-    for (const id of ids) {
-      const [input, output] = await Promise.all(['download_input', 'download_sol'].map(async (kind) => {
-        const res = await this._request(new URL(`testcases/${id}/${kind}`, this.root).href);
-        if (!res.ok) throw new Error(`Test case ${id} ${kind} failed (${res.status})`);
-        return res.text();
-      }));
-      cases.push({ input, output });
+    for (const tc of page) {
+      const input = tc.inputCut ? await this._download(tc.id, 'download_input') : tc.input;
+      const output = tc.outputCut ? await this._download(tc.id, 'download_sol') : tc.output;
+      const c = { input: input ?? tc.input, output: output ?? tc.output };
+      if (input === null) c.partialInput = true;
+      if (output === null) c.partialOutput = true;
+      cases.push(c);
     }
     return cases;
   }
@@ -213,4 +252,4 @@ GraderClient.prototype.waitForGrade = async function waitForGrade(submissionId, 
   }
 };
 
-module.exports = { GraderClient, decodeEntities, parseProblemList, parseSubmissionPage, parseSubmitForm };
+module.exports = { GraderClient, decodeEntities, parseProblemList, parseSubmissionPage, parseSubmitForm, parseTestcasePage };

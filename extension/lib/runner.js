@@ -7,7 +7,7 @@ const path = require('path');
 
 const MAX_OUTPUT = 1 << 20; // stop collecting after 1 MiB so an infinite printer can't eat memory
 
-const { normalize } = require('./diff');
+const { normalize, comparedOutputs } = require('./diff');
 
 function execP(cmd, args, opts) {
   return new Promise((resolve) => {
@@ -87,18 +87,21 @@ function runOne(cmd, args, input, timeoutMs) {
   });
 }
 
-// -> [{ verdict: 'PASS'|'FAIL'|'TLE'|'RE', ms, stdout, stderr }]
+// -> [{ verdict: 'PASS'|'FAIL'|'TLE'|'RE'|'SKIP', ms, stdout, stderr }]
+// SKIP: the grader only shows the start of this test's input, so it can't be run locally.
 async function runTests(file, cases, cfg) {
   const prep = await prepare(file, cfg);
   try {
     const results = [];
     for (const tc of cases) {
+      if (tc.partialInput) { results.push({ verdict: 'SKIP', ms: 0, stdout: '', stderr: '' }); continue; }
       const r = await runOne(prep.cmd, prep.args, tc.input, cfg.timeoutMs);
       if (r.spawnError) throw new Error(`Could not start "${prep.cmd}": ${r.spawnError}`);
+      const cmp = comparedOutputs(tc, r.stdout);
       let verdict = 'PASS';
       if (r.timedOut) verdict = 'TLE';
       else if (r.code !== 0) verdict = 'RE';
-      else if (normalize(r.stdout) !== normalize(tc.output)) verdict = 'FAIL';
+      else if (normalize(cmp.actual) !== normalize(cmp.expected)) verdict = 'FAIL';
       results.push({ verdict, ms: r.ms, stdout: r.stdout, stderr: r.stderr });
     }
     return results;
