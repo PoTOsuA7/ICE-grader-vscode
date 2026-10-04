@@ -2,7 +2,7 @@
   "name": "nattee-grader",
   "displayName": "ICE Nattee Grader",
   "description": "NatteeGrader (Chula 2190101) in VS Code: problem statements, test cases, run, submit and see your progress",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "potosua7",
   "icon": "icon.png",
   "galleryBanner": {

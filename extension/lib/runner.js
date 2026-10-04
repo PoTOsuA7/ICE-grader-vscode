@@ -59,13 +59,36 @@ function killTree(child) {
   }
 }
 
-function runOne(cmd, args, input, timeoutMs) {
+// Data files: on the grader a problem's data files sit in /data/ and the test input names them by that
+// absolute path (e.g. "/data/data.txt 2562"). Locally they're written to a temp folder, the program runs
+// there, and "/data/<name>" in the input becomes the relative "data/<name>" (no drive letters or spaces).
+// The files are also put next to the program's working directory under their bare name.
+function dataSandbox(files) {
+  if (!files || !Object.keys(files).length) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nattee-data-'));
+  fs.mkdirSync(path.join(dir, 'data'));
+  for (const [name, text] of Object.entries(files)) {
+    const safe = path.basename(name); // never write outside the sandbox
+    fs.writeFileSync(path.join(dir, 'data', safe), text);
+    fs.writeFileSync(path.join(dir, safe), text);
+  }
+  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
+function mapDataPaths(input, files) {
+  if (!files) return input;
+  let out = input;
+  for (const name of Object.keys(files)) out = out.split(`/data/${name}`).join(`data/${path.basename(name)}`);
+  return out;
+}
+
+function runOne(cmd, args, input, timeoutMs, cwd) {
   return new Promise((resolve) => {
     const start = Date.now();
     let out = '', err = '', timedOut = false, done = false;
     // UTF-8 so printing non-ASCII (★, Thai, ...) doesn't crash Python's default Windows codepage
     const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
-    const child = spawn(cmd, args, { windowsHide: true, env, detached: process.platform !== 'win32' });
+    const child = spawn(cmd, args, { windowsHide: true, env, cwd, detached: process.platform !== 'win32' });
     const finish = (extra) => {
       if (done) return;
       done = true;
@@ -95,7 +118,11 @@ async function runTests(file, cases, cfg) {
     const results = [];
     for (const tc of cases) {
       if (tc.partialInput) { results.push({ verdict: 'SKIP', ms: 0, stdout: '', stderr: '' }); continue; }
-      const r = await runOne(prep.cmd, prep.args, tc.input, cfg.timeoutMs);
+      const box = dataSandbox(tc.files);
+      let r;
+      try {
+        r = await runOne(prep.cmd, prep.args, mapDataPaths(tc.input, tc.files), cfg.timeoutMs, box && box.dir);
+      } finally { if (box) box.cleanup(); }
       if (r.spawnError) throw new Error(`Could not start "${prep.cmd}": ${r.spawnError}`);
       const cmp = comparedOutputs(tc, r.stdout);
       let verdict = 'PASS';
@@ -110,17 +137,20 @@ async function runTests(file, cases, cfg) {
   }
 }
 
-// Run once with arbitrary input (no expected output). -> { verdict: 'OK'|'TLE'|'RE', ms, stdout, stderr }
-async function runSingle(file, input, cfg) {
+// Run once with arbitrary input (no expected output), with the problem's data files if it has any.
+// -> { verdict: 'OK'|'TLE'|'RE', ms, stdout, stderr }
+async function runSingle(file, input, cfg, files) {
   const prep = await prepare(file, cfg);
+  const box = dataSandbox(files);
   try {
-    const r = await runOne(prep.cmd, prep.args, input, cfg.timeoutMs);
+    const r = await runOne(prep.cmd, prep.args, mapDataPaths(input, files), cfg.timeoutMs, box && box.dir);
     if (r.spawnError) throw new Error(`Could not start "${prep.cmd}": ${r.spawnError}`);
     const verdict = r.timedOut ? 'TLE' : r.code !== 0 ? 'RE' : 'OK';
     return { verdict, ms: r.ms, stdout: r.stdout, stderr: r.stderr };
   } finally {
     prep.cleanup();
+    if (box) box.cleanup();
   }
 }
 
-module.exports = { runTests, runSingle, normalize };
+module.exports = { runTests, runSingle, normalize, mapDataPaths };

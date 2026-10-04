@@ -118,12 +118,10 @@ function activate(context) {
   }
 
   async function getTests(p) {
-    const file = path.join(problemDir(p.id), 'tests.json');
-    try {
-      const cached = JSON.parse(fs.readFileSync(file, 'utf8'));
-      // Older versions could save a grader web page as the test when downloads were blocked; fetch those again.
-      if (!cached.some((c) => /^\s*<!DOCTYPE html/i.test(c.input) && /^\s*<!DOCTYPE html/i.test(c.output))) return cached;
-    } catch { /* not cached yet */ }
+    // v2: read from the test case page, with data files. Older tests.json caches (which could hold a grader
+    // web page instead of the test) are simply ignored.
+    const file = path.join(problemDir(p.id), 'tests.v2.json');
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* not cached yet */ }
     const cases = await withClient((c) => c.fetchTestcases(p.id));
     fs.mkdirSync(problemDir(p.id), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(cases));
@@ -386,8 +384,9 @@ function activate(context) {
     }
     if (!input.endsWith('\n')) input += '\n';
     await ed.document.save();
+    const files = cases.length ? cases[0].files : undefined; // so custom input can name /data/... files too
     const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Running...' },
-      () => runSingle(ed.document.fileName, input, runCfg()));
+      () => runSingle(ed.document.fileName, input, runCfg(), files));
     showView(singleResultHtml(title, input, expected, r), title);
   });
 
@@ -467,6 +466,7 @@ function activate(context) {
       language: path.extname(ed.document.fileName).slice(1) || 'text',
       problem: p,
       totalFailing: failing.length,
+      dataFiles: run.cases[0] && run.cases[0].files,
       failures: failing.slice(0, MAX_FAILURES).map(({ r, i }) => ({
         n: i + 1, testInput: run.cases[i].input, expected: run.cases[i].output,
         actual: r.stdout, stderr: r.stderr, verdict: r.verdict,

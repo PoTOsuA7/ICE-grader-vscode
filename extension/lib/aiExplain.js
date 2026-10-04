@@ -35,15 +35,21 @@ function describeFailure({ n, testInput, expected, actual, stderr, verdict }) {
   return lines.join('\n');
 }
 
-// context: { code, language, problem?, failures: [...], totalFailing }
-function buildPrompt({ code, language, problem, failures, totalFailing }) {
+// context: { code, language, problem?, failures: [...], totalFailing, dataFiles?: {name: text} }
+function buildPrompt({ code, language, problem, failures, totalFailing, dataFiles }) {
   const shown = failures.slice(0, MAX_FAILURES);
+  const files = Object.entries(dataFiles || {}).slice(0, 5);
   const lines = [
     problem ? `Problem: ${problem.code}${problem.name ? ' - ' + problem.name : ''}` : null,
     `Language: ${language}`,
     '',
     'Source code:', '```' + language, code, '```',
     '',
+    ...(files.length ? [
+      'Data files the program can open (at /data/<name> on the grader; the inputs below refer to them):',
+      ...files.flatMap(([name, text]) => [`${name}:`, '```', clip(text || '(empty)'), '```']),
+      '',
+    ] : []),
     `Failing tests (${shown.length} of ${totalFailing || failures.length} shown):`,
     ...shown.map(describeFailure),
   ];

@@ -121,3 +121,50 @@ test('runner skips a test whose input is only partly known and checks partial ou
   assert.match(html, /1 skipped/);
   assert.match(html, /only shows the start of this test's input/);
 });
+
+// ---- data files ("Data files read at run time")
+const { parseDataFiles } = require('../lib/client');
+const { mapDataPaths } = require('../lib/runner');
+const dataSection = (...files) => `<div class='card shadow-sm mb-4' id='data-files'>
+<div class='card-body'>
+<h5 class='fw-bold mb-1'>Data files read at run time</h5>
+<div class='row g-3'>${files.map(([name, size, text]) => file(name, size, text)).join('\n')}</div></div></div>`;
+
+test('data files are read from their own section and not mistaken for a test', () => {
+  const html = pageHtml(pane(1, ['19 Bytes', '/data/data.txt 2562'], ['14 Bytes', '50.0 90.0 70.0'])) +
+    dataSection(['data.txt', '31 Bytes', '6230012121 90.0\n6230215221 50.0'], ['empty.txt', '0 Bytes', '']);
+  assert.deepStrictEqual(parseTestcasePage(html).map((c) => c.input), ['/data/data.txt 2562']);
+  assert.deepStrictEqual(parseDataFiles(html).map((f) => [f.name, f.text, f.cut]),
+    [['data.txt', '6230012121 90.0\n6230215221 50.0', false], ['empty.txt', '', false]]);
+  assert.deepStrictEqual(parseDataFiles(pageHtml(pane(1, ['1 Byte', 'x'], ['1 Byte', 'y']))), []);
+});
+
+test('/data/ paths in the input are pointed at the local copies', () => {
+  const files = { 'data1.txt': '', 'data2.txt': '' };
+  assert.strictEqual(mapDataPaths('/data/data1.txt /data/data2.txt', files), 'data/data1.txt data/data2.txt');
+  assert.strictEqual(mapDataPaths('/data/other.txt', files), '/data/other.txt');
+  assert.strictEqual(mapDataPaths('/data/x', undefined), '/data/x');
+});
+
+test('a program that opens /data/... from its input runs against the data files', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nattee-df-'));
+  const f = path.join(dir, 'sol.py');
+  fs.writeFileSync(f, 'a, b = input().split()\nprint(open(a).read().strip(), len(open(b).read()))');
+  const cfg = { pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', timeoutMs: 10000 };
+  try { await runSingle(f, '1\n', cfg); } catch { return t.skip('no python'); }
+  const files = { 'a.txt': 'hello', 'b.txt': '' };
+  const cases = [{ input: '/data/a.txt /data/b.txt\n', output: 'hello 0\n', files }];
+  assert.deepStrictEqual((await runTests(f, cases, cfg)).map((r) => r.verdict), ['PASS']);
+  assert.strictEqual((await runSingle(f, '/data/a.txt /data/b.txt\n', cfg, files)).stdout.trim(), 'hello 0');
+  assert.match(localResultsHtml({ code: 'X' }, cases, [{ verdict: 'PASS', ms: 1, stdout: '', stderr: '' }]), /Data files from the grader: a\.txt, b\.txt/);
+});
+
+test('fetchTestcases attaches the data files to every test', async () => {
+  const html = pageHtml(pane(1, ['3 Bytes', 'abc'], ['1 Byte', 'x']), pane(2, ['3 Bytes', 'def'], ['1 Byte', 'y'])) +
+    dataSection(['d.txt', '2 Bytes', 'hi']);
+  const g = fakeGrader(html, false);
+  try {
+    const cases = await new GraderClient('https://grader.test/').fetchTestcases(1);
+    assert.deepStrictEqual(cases.map((c) => c.files), [{ 'd.txt': 'hi' }, { 'd.txt': 'hi' }]);
+  } finally { g.restore(); }
+});

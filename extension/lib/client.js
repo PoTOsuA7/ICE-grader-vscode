@@ -76,31 +76,43 @@ function parseSubmitForm(html) {
 const UNITS = { byte: 1, bytes: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3 };
 const toBytes = (num, unit) => parseFloat(num.replace(/,/g, '')) * UNITS[unit.toLowerCase()];
 
+// Each file on the test case page: an <h6> name, its real size, then a textarea showing it, capped
+// (e.g. "Showing the first 2 KB of each file"). A file is "cut" when the size says there is more than shown.
+// -> [{name, text, cut}]
+function pageFiles(html, cap) {
+  return [...html.matchAll(
+    /<h6[^>]*>([^<]*)<\/h6>[\s\S]*?<span class='text-secondary small'>([\d.,]+)\s*(Bytes?|KB|MB|GB)<\/span>[\s\S]*?<textarea[^>]*>([\s\S]*?)<\/textarea>/gi)]
+    .map(([, name, num, unit, raw]) => {
+      let text = decodeEntities(raw);
+      const size = toBytes(num, unit);
+      const exact = /^bytes?$/i.test(unit);
+      // Some templates put a newline right after <textarea> that isn't part of the file.
+      if (exact && text.startsWith('\n') && Buffer.byteLength(text) === size + 1) text = text.slice(1);
+      const shown = Buffer.byteLength(text);
+      const cut = exact ? shown < size : size > shown * 1.05 || (shown >= cap - 8 && size >= cap);
+      return { name: decodeEntities(name).trim(), text, cut };
+    });
+}
+
 // testcases/show_problem/ID -> [{id, input, output, inputCut, outputCut}]
-// The page shows each file in a textarea, capped (e.g. "Showing the first 2 KB of each file"), with its real
-// size next to it. A file is "cut" when the size says there is more than the textarea holds.
 function parseTestcasePage(html) {
   const capM = /Showing the first ([\d.,]+)\s*(Bytes?|KB|MB)/i.exec(html);
   const cap = capM ? toBytes(capM[1], capM[2]) : Infinity;
-  const panes = html.split(/<div class='tab-pane[^']*' id='tc(\d+)'/);
+  const panes = html.split(/id='data-files'/)[0].split(/<div class='tab-pane[^']*' id='tc(\d+)'/);
   const cases = [];
   for (let i = 1; i < panes.length; i += 2) {
-    const files = [...panes[i + 1].matchAll(
-      /<span class='text-secondary small'>([\d.,]+)\s*(Bytes?|KB|MB|GB)<\/span>[\s\S]*?<textarea[^>]*>([\s\S]*?)<\/textarea>/gi)]
-      .map(([, num, unit, raw]) => {
-        let text = decodeEntities(raw);
-        const size = toBytes(num, unit);
-        const exact = /^bytes?$/i.test(unit);
-        // Some templates put a newline right after <textarea> that isn't part of the file.
-        if (exact && text.startsWith('\n') && Buffer.byteLength(text) === size + 1) text = text.slice(1);
-        const shown = Buffer.byteLength(text);
-        const cut = exact ? shown < size : size > shown * 1.05 || (shown >= cap - 8 && size >= cap);
-        return { text, cut };
-      });
+    const files = pageFiles(panes[i + 1], cap);
     if (files.length < 2) continue;
     cases.push({ id: panes[i], input: files[0].text, output: files[1].text, inputCut: files[0].cut, outputCut: files[1].cut });
   }
   return cases;
+}
+
+// The "Data files read at run time" section: files the program opens (e.g. /data/data.txt) -> [{name, text, cut}]
+function parseDataFiles(html) {
+  const capM = /Showing the first ([\d.,]+)\s*(Bytes?|KB|MB)/i.exec(html);
+  const at = html.indexOf("id='data-files'");
+  return at < 0 ? [] : pageFiles(html.slice(at), capM ? toBytes(capM[1], capM[2]) : Infinity);
 }
 
 const LANGUAGE_PATTERNS ={ '.py': /python/i, '.cpp': /c\+\+|cpp/i, '.c': /^c$|^c\s|ansi c/i };
@@ -193,19 +205,24 @@ class GraderClient {
     return res.text();
   }
 
-  // -> [{input, output, partialInput?, partialOutput?}]. Read from the test case page; a file cut off there
-  // is downloaded in full when the grader allows it, otherwise kept as the visible part and flagged partial.
+  // -> [{input, output, partialInput?, partialOutput?, files?}]. Read from the test case page; a file cut off
+  // there is downloaded in full when the grader allows it, otherwise kept as the visible part and flagged partial.
+  // `files` are the problem's data files ({name: text}), which the program may open while it runs.
   async fetchTestcases(problemId) {
     const html = await this._getText(`testcases/show_problem/${problemId}`);
     const page = parseTestcasePage(html);
     if (!page.length) throw new Error('No test cases visible for this problem (not published, session expired, or the page layout changed)');
+    const data = parseDataFiles(html);
+    const files = data.length ? Object.fromEntries(data.map((f) => [f.name, f.text])) : null;
+    const dataCut = data.some((f) => f.cut); // can't download data files, so a cut one makes the run unreliable
     const cases = [];
     for (const tc of page) {
       const input = tc.inputCut ? await this._download(tc.id, 'download_input') : tc.input;
       const output = tc.outputCut ? await this._download(tc.id, 'download_sol') : tc.output;
       const c = { input: input ?? tc.input, output: output ?? tc.output };
-      if (input === null) c.partialInput = true;
+      if (input === null || dataCut) c.partialInput = true;
       if (output === null) c.partialOutput = true;
+      if (files) c.files = files;
       cases.push(c);
     }
     return cases;
@@ -252,4 +269,4 @@ GraderClient.prototype.waitForGrade = async function waitForGrade(submissionId, 
   }
 };
 
-module.exports = { GraderClient, decodeEntities, parseProblemList, parseSubmissionPage, parseSubmitForm, parseTestcasePage };
+module.exports = { GraderClient, decodeEntities, parseProblemList, parseSubmissionPage, parseSubmitForm, parseTestcasePage, parseDataFiles };

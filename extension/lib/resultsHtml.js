@@ -72,7 +72,9 @@ function localResultsHtml(problem, cases, results) {
       </div>${r.stderr ? `<h4>stderr</h4><pre class="err">${esc(clip(r.stderr))}</pre>` : ''}
     </details>`;
   }).join('');
-  return page(`<div class="sum"><b>${esc(problem.code)}</b> — ${passed}/${results.length - skipped} passed${skipped ? ` <span class="ms">(${skipped} skipped)</span>` : ''}</div>${rows}`);
+  const files = cases[0] && cases[0].files ? Object.keys(cases[0].files) : [];
+  const filesNote = files.length ? `<div class="ms">Data files from the grader: ${files.map(esc).join(', ')}. Paths like /data/${esc(files[0])} in the input point to them.</div>` : '';
+  return page(`<div class="sum"><b>${esc(problem.code)}</b> — ${passed}/${results.length - skipped} passed${skipped ? ` <span class="ms">(${skipped} skipped)</span>` : ''}</div>${filesNote}${rows}`);
 }
 
 // one run with a chosen test's input or custom input; expected is optional
