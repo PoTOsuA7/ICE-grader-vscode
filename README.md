@@ -24,11 +24,14 @@ Everything from the NatteeGrader website inside VS Code, so you never alt-tab:
   - On the free tier Google may use what you send to improve its products. Nothing is sent until you run
     the command. The model is set by `nattee.geminiModel` (default `gemini-3.8-flash`). If Google says it's
     overloaded, the extension retries twice and then asks `nattee.geminiFallbackModel` (default `gemini-3.5-flash`).
-- Test cases are downloaded straight from the grader and cached locally. Credentials (grader and Gemini key) are
+- Test cases are read from the grader's test case page and cached locally. The grader shows only the first 2 KB
+  of each file: a test whose input is longer shows as SKIP (submit to check it), and a longer expected output is
+  checked on the part that's shown. Credentials (grader and Gemini key) are
   kept in VS Code's secret storage, not a temp file.
 
 ## Install
 In VS Code open Extensions (`Ctrl+Shift+X`), search **ICE Nattee Grader** and click Install. Needs VS Code 1.90+.
+Cursor, Windsurf and VSCodium get it the same way, from [Open VSX](https://open-vsx.org/extension/potosua7/nattee-grader).
 
 Or download `nattee-grader.vsix` from [Releases](https://github.com/PoTOsuA7/ICE-grader-vscode/releases) and run
 `code --install-extension nattee-grader.vsix`. To build it yourself: `python tools/build_vsix.py`.
@@ -59,7 +62,9 @@ finds it automatically.
 cd extension
 node --test          # unit tests, no VS Code needed
 python ../tools/build_vsix.py
+python ../tools/publish_openvsx.py   # Open VSX upload; token from OVSX_PAT or ~/.ovsx_token
 ```
+The VS Code Marketplace upload is done by hand at marketplace.visualstudio.com/manage (Update → the `.vsix`).
 
 ## License
 MIT. Bundles pdf.js (Apache-2.0), see `THIRD_PARTY_NOTICES.md`.
