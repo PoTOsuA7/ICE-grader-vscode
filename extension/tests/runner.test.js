@@ -6,11 +6,14 @@ const os = require('os');
 const path = require('path');
 const { runTests, runSingle } = require('../lib/runner');
 
-const cfg = { pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', timeoutMs: 1500 };
+// Generous limit so a slow CI machine starting Python doesn't turn a correct run into TLE;
+// the timeout tests use `fast` so they don't wait long.
+const cfg = { pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', timeoutMs: 10000 };
+const fast = { ...cfg, timeoutMs: 1500 };
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nattee-test-'));
 const write = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
 const cases = [{ input: '2 3\n', output: '5\n' }, { input: '10 1\n', output: '11\n' }];
-const verdicts = async (f, cs = cases) => (await runTests(f, cs, cfg)).map((r) => r.verdict);
+const verdicts = async (f, cs = cases, c = cfg) => (await runTests(f, cs, c)).map((r) => r.verdict);
 
 // Skip the Python tests if there is no Python on this machine.
 async function havePython() {
@@ -23,7 +26,7 @@ test('verdicts: PASS, FAIL, RE, TLE, and trailing whitespace is ignored', async 
   assert.deepStrictEqual(await verdicts(write('bad.py', 'a,b=map(int,input().split());print(a*b)')), ['FAIL', 'FAIL']);
   assert.deepStrictEqual(await verdicts(write('crash.py', 'raise SystemExit(3)')), ['RE', 'RE']);
   assert.deepStrictEqual(await verdicts(write('ws.py', 'a,b=map(int,input().split());print(a+b,end="  \\n\\n")')), ['PASS', 'PASS']);
-  assert.deepStrictEqual(await verdicts(write('slow.py', 'while True: pass'), [cases[0]]), ['TLE']);
+  assert.deepStrictEqual(await verdicts(write('slow.py', 'while True: pass'), [cases[0]], fast), ['TLE']);
 });
 
 test('non-ASCII output survives (UTF-8)', async (t) => {
@@ -37,7 +40,7 @@ test('runSingle reports OK, RE and TLE', async (t) => {
   if (!(await havePython())) return t.skip('no python');
   assert.strictEqual((await runSingle(write('echo.py', 'print(input())'), 'hi\n', cfg)).stdout.trim(), 'hi');
   assert.strictEqual((await runSingle(write('boom.py', '1/0'), '', cfg)).verdict, 'RE');
-  assert.strictEqual((await runSingle(write('hang.py', 'import time; time.sleep(60)'), '', cfg)).verdict, 'TLE');
+  assert.strictEqual((await runSingle(write('hang.py', 'import time; time.sleep(60)'), '', fast)).verdict, 'TLE');
 });
 
 test('a timeout also kills processes the solution started', async (t) => {

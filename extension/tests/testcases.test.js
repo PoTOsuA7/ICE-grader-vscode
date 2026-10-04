@@ -107,7 +107,7 @@ test('runner skips a test whose input is only partly known and checks partial ou
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nattee-tc-'));
   const f = path.join(dir, 'sol.py');
   fs.writeFileSync(f, 'for i in range(int(input())): print(i)');
-  const cfg = { pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', timeoutMs: 3000 };
+  const cfg = { pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', timeoutMs: 10000 };
   try { await runSingle(f, '1\n', cfg); } catch { return t.skip('no python'); }
   const cases = [
     { input: '5\n', output: '0\n1\n2\n3', partialOutput: true },
