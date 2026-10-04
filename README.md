@@ -62,9 +62,10 @@ finds it automatically.
 cd extension
 node --test          # unit tests, no VS Code needed
 python ../tools/build_vsix.py
-python ../tools/publish_openvsx.py   # Open VSX upload; token from OVSX_PAT or ~/.ovsx_token
+python ../tools/publish_openvsx.py      # Open VSX upload; token from OVSX_PAT or ~/.ovsx_token
+python ../tools/publish_marketplace.py  # VS Code Marketplace update; token from VSCE_PAT or ~/.vsce_token
 ```
-The VS Code Marketplace upload is done by hand at marketplace.visualstudio.com/manage (Update → the `.vsix`).
+Or upload by hand at marketplace.visualstudio.com/manage (Update → the `.vsix`).
 
 ## License
 MIT. Bundles pdf.js (Apache-2.0), see `THIRD_PARTY_NOTICES.md`.
