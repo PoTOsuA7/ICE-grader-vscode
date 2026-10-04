@@ -1,4 +1,4 @@
-# Nattee Grader for VS Code
+# ICE Nattee Grader for VS Code
 
 Everything from the NatteeGrader website inside VS Code, so you never alt-tab:
 
@@ -27,12 +27,14 @@ Everything from the NatteeGrader website inside VS Code, so you never alt-tab:
 - Test cases are downloaded straight from the grader and cached locally. Credentials (grader and Gemini key) are
   kept in VS Code's secret storage, not a temp file.
 
-## Install (local)
-Run `python tools/build_vsix.py` then `code --install-extension nattee-grader.vsix`, and reload VS Code
-(needs VS Code 1.90+).
+## Install
+In VS Code open Extensions (`Ctrl+Shift+X`), search **ICE Nattee Grader** and click Install. Needs VS Code 1.90+.
+
+Or download `nattee-grader.vsix` from [Releases](https://github.com/PoTOsuA7/ICE-grader-vscode/releases) and run
+`code --install-extension nattee-grader.vsix`. To build it yourself: `python tools/build_vsix.py`.
 
 ## Use
-1. Open the **Nattee Grader** icon in the activity bar → **Sign in**.
+1. Open the **ICE Nattee Grader** icon in the activity bar → **Sign in**.
 2. Right-click a problem → **Create Solution File**. It creates `<chapter>/<code>.py` in your workspace
    (e.g. `05_List/05_List_15.py`), links it and shows the statement. If a file with that name already exists
    anywhere in the workspace it opens that one instead. Set `nattee.organizeByChapter` to `false` to keep files flat.

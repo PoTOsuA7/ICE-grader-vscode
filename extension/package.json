@@ -1,9 +1,35 @@
 {
   "name": "nattee-grader",
-  "displayName": "Nattee Grader",
-  "description": "Browse NatteeGrader problems, read statements and run test cases without leaving VS Code",
-  "version": "0.3.1",
-  "publisher": "local",
+  "displayName": "ICE Nattee Grader",
+  "description": "NatteeGrader (Chula 2190101) in VS Code: problem statements, test cases, run, submit and see your progress",
+  "version": "0.3.2",
+  "publisher": "potosua7",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#2b3a67",
+    "theme": "dark"
+  },
+  "categories": [
+    "Education",
+    "Testing",
+    "Other"
+  ],
+  "keywords": [
+    "nattee",
+    "nattee grader",
+    "grader",
+    "2190101",
+    "chula",
+    "chulalongkorn",
+    "ICE",
+    "cafe grader",
+    "test cases",
+    "python"
+  ],
+  "homepage": "https://github.com/PoTOsuA7/ICE-grader-vscode#readme",
+  "bugs": {
+    "url": "https://github.com/PoTOsuA7/ICE-grader-vscode/issues"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -16,7 +42,7 @@
       "activitybar": [
         {
           "id": "nattee",
-          "title": "Nattee Grader",
+          "title": "ICE Nattee Grader",
           "icon": "$(mortar-board)"
         }
       ]
@@ -141,7 +167,7 @@
       ]
     },
     "configuration": {
-      "title": "Nattee Grader",
+      "title": "ICE Nattee Grader",
       "properties": {
         "nattee.rootUrl": {
           "type": "string",
