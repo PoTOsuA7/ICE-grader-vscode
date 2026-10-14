@@ -55,6 +55,8 @@ function statementHtml(webview, statementPath, libDir) {
   let pdfDoc = null;
   let scale = 1.5;
   let canvases = [];
+  let shownScale = scale; // scale of the canvases on screen (zooms can be ahead of it while rendering)
+  let renderGen = 0;
 
   function scrollEl() {
     return document.scrollingElement || document.documentElement;
@@ -62,13 +64,17 @@ function statementHtml(webview, statementPath, libDir) {
 
   // Renders into brand-new canvases off to the side, then swaps them in only
   // once fully drawn — avoids ever showing a blank/cleared canvas mid-render.
+  // Only the newest render is swapped in: with quick zooming an older, slower (bigger) render can
+  // finish last and would otherwise replace the newer one. -> true if this render is now on screen.
   async function renderAll() {
-    zoomLabel.textContent = Math.round((scale / 1.5) * 100) + '%';
+    const gen = ++renderGen;
+    const s = scale;
+    zoomLabel.textContent = Math.round((s / 1.5) * 100) + '%';
 
     const pages = await Promise.all(
       Array.from({ length: pdfDoc.numPages }, (_, i) => pdfDoc.getPage(i + 1))
     );
-    const viewports = pages.map((p) => p.getViewport({ scale }));
+    const viewports = pages.map((p) => p.getViewport({ scale: s }));
 
     const newCanvases = viewports.map((vp) => {
       const c = document.createElement('canvas');
@@ -83,23 +89,25 @@ function statementHtml(webview, statementPath, libDir) {
       )
     );
 
+    if (gen !== renderGen) return false;
     canvases.forEach((c) => c.remove());
     newCanvases.forEach((c) => container.appendChild(c));
     canvases = newCanvases;
+    shownScale = s;
+    return true;
   }
 
   // Zooms while keeping the content under (clientX, clientY) fixed in place.
   async function zoomTo(newScale, clientX, clientY) {
     const el = scrollEl();
-    const oldScale = scale;
-    const contentX = (el.scrollLeft + clientX) / oldScale;
-    const contentY = (el.scrollTop + clientY) / oldScale;
+    const contentX = (el.scrollLeft + clientX) / shownScale;
+    const contentY = (el.scrollTop + clientY) / shownScale;
 
     scale = newScale;
-    await renderAll();
+    if (!(await renderAll())) return; // a newer zoom took over
 
-    el.scrollLeft = contentX * scale - clientX;
-    el.scrollTop = contentY * scale - clientY;
+    el.scrollLeft = contentX * shownScale - clientX;
+    el.scrollTop = contentY * shownScale - clientY;
   }
 
   document.getElementById('zoomIn').addEventListener('click', () => {

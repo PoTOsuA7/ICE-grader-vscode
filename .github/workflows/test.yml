@@ -18,3 +18,9 @@ jobs:
           python-version: '3.12'
       - run: node --test
         working-directory: extension
+      # The package must build, and must contain the extension's entry point, manifest and libraries.
+      - run: python tools/build_vsix.py
+      - run: >
+          python -c "import zipfile; n = set(zipfile.ZipFile('nattee-grader.vsix').namelist());
+          need = {'extension.vsixmanifest', 'extension/package.json', 'extension/extension.js', 'extension/lib/client.js', 'extension/lib/runner.js', 'extension/README.md'};
+          missing = need - n; assert not missing, missing; assert not any(x.startswith('extension/tests/') for x in n), 'tests packaged'"

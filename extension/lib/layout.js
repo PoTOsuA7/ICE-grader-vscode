@@ -2,7 +2,11 @@
 // Where solution files go in the workspace.
 const path = require('path');
 
-const safeName = (s) => s.replace(/[^\w\-.]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'problem';
+// A file or folder name made from a problem code. Never "." or ".." (or empty), which would point outside.
+const safeName = (s) => {
+  const name = s.replace(/[^\w\-.]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+  return !name || /^\.+$/.test(name) ? 'problem' : name;
+};
 
 // 05_List_15 -> 05_List. Also the sidebar's chapter grouping.
 const chapterOf = (code) => code.split('_').slice(0, 2).join('_') || code;

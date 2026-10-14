@@ -58,7 +58,7 @@ const ok = (text) => [200, { candidates: [{ content: { parts: [{ text: 'thinking
 test('sends the prompt with low thinking and returns the text, skipping thought parts', async () => {
   const f = fakeGemini(ok('You printed the wrong thing.'));
   try {
-    assert.deepStrictEqual(await run(), { text: 'You printed the wrong thing.', model: 'gemini-3.8-flash' });
+    assert.deepStrictEqual(await run(), { text: 'You printed the wrong thing.', model: 'gemini-3.8-flash', fallback: false });
     assert.ok(f.sent[0].contents[0].parts[0].text.includes('print(1+1)'));
     assert.ok(f.sent[0].systemInstruction.parts[0].text.includes('Do not rewrite the program'));
     assert.strictEqual(f.sent[0].generationConfig.thinkingConfig.thinkingLevel, 'low');
@@ -100,7 +100,7 @@ const busy = [503, { error: { code: 503, message: 'The model is overloaded. Plea
 test('an overloaded model is retried before giving up', async () => {
   const f = fakeGemini(busy, busy, ok('second retry worked'));
   try {
-    assert.deepStrictEqual(await run(), { text: 'second retry worked', model: 'gemini-3.8-flash' });
+    assert.deepStrictEqual(await run(), { text: 'second retry worked', model: 'gemini-3.8-flash', fallback: false });
     assert.deepStrictEqual(f.models, ['gemini-3.8-flash', 'gemini-3.8-flash', 'gemini-3.8-flash']);
   } finally { f.restore(); }
 });
@@ -108,7 +108,7 @@ test('an overloaded model is retried before giving up', async () => {
 test('if the main model stays overloaded, the fallback model answers', async () => {
   const f = fakeGemini(busy, busy, busy, ok('from fallback'));
   try {
-    assert.deepStrictEqual(await run(['gemini-3.8-flash', 'gemini-3.5-flash']), { text: 'from fallback', model: 'gemini-3.5-flash' });
+    assert.deepStrictEqual(await run(['gemini-3.8-flash', 'gemini-3.5-flash']), { text: 'from fallback', model: 'gemini-3.5-flash', fallback: true });
     assert.deepStrictEqual(f.models, ['gemini-3.8-flash', 'gemini-3.8-flash', 'gemini-3.8-flash', 'gemini-3.5-flash']);
   } finally { f.restore(); }
 });
@@ -128,3 +128,34 @@ test('a bad key is not retried or sent to the fallback model', async () => {
     assert.strictEqual(f.models.length, 1);
   } finally { f.restore(); }
 });
+
+test('no model set: a clear error, and nothing is sent', async () => {
+  const f = fakeGemini(ok('unused'));
+  try {
+    await assert.rejects(() => run(['', '']), /No Gemini model is set/);
+    assert.strictEqual(f.sent.length, 0);
+  } finally { f.restore(); }
+});
+
+test('an empty main model with a fallback set is not reported as "overloaded"', async () => {
+  const f = fakeGemini(ok('fine'));
+  try {
+    assert.deepStrictEqual(await run(['', 'gemini-3.5-flash']), { text: 'fine', model: 'gemini-3.5-flash', fallback: false });
+  } finally { f.restore(); }
+});
+
+test('a cut-off expected output does not produce a made-up "first difference"', () => {
+  const full = Array.from({ length: 300 }, (_, i) => `line ${i} ${'x'.repeat(i % 7)}`).join('\n') + '\n';
+  const prompt = buildPrompt({
+    code: 'x', language: 'py', totalFailing: 1,
+    failures: [{ n: 1, testInput: '1\n', expected: full.slice(0, 2048), partialOutput: true, actual: full, verdict: 'RE', stderr: 'boom' }],
+  });
+  assert.doesNotMatch(prompt, /First difference/);
+  assert.match(prompt, /Only the start of the expected output is known/);
+  const wrong = buildPrompt({
+    code: 'x', language: 'py', totalFailing: 1,
+    failures: [{ n: 1, testInput: '1\n', expected: full.slice(0, 2048), partialOutput: true, actual: 'nope\n', verdict: 'FAIL' }],
+  });
+  assert.match(wrong, /First difference from expected: line 1/);
+});
+

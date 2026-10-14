@@ -6,23 +6,35 @@ const os = require('os');
 const path = require('path');
 
 const MAX_OUTPUT = 1 << 20; // stop collecting after 1 MiB so an infinite printer can't eat memory
+const EXIT_GRACE_MS = 300; // after the program exits, how long to wait for its output pipes to close
+
+// Remove a temp folder without ever failing the run: on Windows a process that is still running (e.g. one the
+// solution started and left behind) can keep it locked.
+const removeDir = (dir) => { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch { /* left for the OS */ } };
 
 const { normalize, comparedOutputs } = require('./diff');
 
+// Never rejects: a command that can't even be started (empty name, a .bat file, ...) comes back as { err }.
 function execP(cmd, args, opts) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 60000, windowsHide: true, ...opts }, (err, stdout, stderr) =>
-      resolve({ err, stdout, stderr }));
+    try {
+      execFile(cmd, args, { timeout: 60000, windowsHide: true, ...opts }, (err, stdout, stderr) =>
+        resolve({ err, stdout, stderr }));
+    } catch (err) {
+      resolve({ err, stdout: '', stderr: '' });
+    }
   });
 }
 
 // The Windows "python" command is often a Microsoft Store stub; fall back to the "py" launcher.
+// Only Python 3 counts: the grader runs Python 3, and under Python 2 input() and print behave differently.
 async function findPython(preferred) {
-  for (const c of [preferred, 'py', 'python3']) {
+  const tried = [...new Set([preferred, 'py', 'python3'].filter(Boolean))];
+  for (const c of tried) {
     const r = await execP(c, ['--version'], { timeout: 10000 });
-    if (!r.err && /Python \d/.test(r.stdout + r.stderr)) return c;
+    if (!r.err && /Python 3\./.test(r.stdout + r.stderr)) return c;
   }
-  throw new Error(`Python not found (tried "${preferred}", "py", "python3"). Install Python or set nattee.pythonPath.`);
+  throw new Error(`Python 3 not found (tried ${tried.map((c) => `"${c}"`).join(', ')}). Install Python 3 or set nattee.pythonPath.`);
 }
 
 // -> { cmd, args, cleanup } or throws Error with a user-facing message
@@ -30,12 +42,13 @@ async function prepare(file, cfg) {
   const ext = path.extname(file).toLowerCase();
   if (ext === '.py') return { cmd: await findPython(cfg.pythonPath), args: [file], cleanup() {} };
   if (ext === '.cpp' || ext === '.c') {
-    const compiler = ext === '.c' ? cfg.cCompiler : cfg.cppCompiler;
+    const compiler = (ext === '.c' ? cfg.cCompiler : cfg.cppCompiler) || (ext === '.c' ? 'gcc' : 'g++');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nattee-'));
     const exe = path.join(dir, process.platform === 'win32' ? 'sol.exe' : 'sol');
-    const std = ext === '.c' ? [] : ['-std=c++17'];
-    const r = await execP(compiler, [file, '-O2', ...std, '-o', exe]);
-    const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
+    // C needs -lm on Linux for sqrt/pow/log (the grader links it too); g++ links it by itself.
+    const args = ext === '.c' ? [file, '-O2', '-o', exe, '-lm'] : [file, '-O2', '-std=c++17', '-o', exe];
+    const r = await execP(compiler, args);
+    const cleanup = () => removeDir(dir);
     if (r.err) {
       cleanup();
       if (r.err.code === 'ENOENT') throw new Error(`Compiler "${compiler}" not found. Install it or set nattee.${ext === '.c' ? 'cCompiler' : 'cppCompiler'}.`);
@@ -66,13 +79,19 @@ function killTree(child) {
 function dataSandbox(files) {
   if (!files || !Object.keys(files).length) return null;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nattee-data-'));
-  fs.mkdirSync(path.join(dir, 'data'));
-  for (const [name, text] of Object.entries(files)) {
-    const safe = path.basename(name); // never write outside the sandbox
-    fs.writeFileSync(path.join(dir, 'data', safe), text);
-    fs.writeFileSync(path.join(dir, safe), text);
+  try {
+    fs.mkdirSync(path.join(dir, 'data'));
+    for (const [name, text] of Object.entries(files)) {
+      const safe = path.basename(name); // never write outside the sandbox
+      if (!safe || safe === '.' || safe === '..') continue;
+      fs.writeFileSync(path.join(dir, 'data', safe), text);
+      if (safe !== 'data') fs.writeFileSync(path.join(dir, safe), text); // "data" is the folder itself
+    }
+  } catch (e) {
+    removeDir(dir);
+    throw e;
   }
-  return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => removeDir(dir) };
 }
 
 function mapDataPaths(input, files) {
@@ -82,10 +101,14 @@ function mapDataPaths(input, files) {
   return out;
 }
 
+const DEFAULT_TIMEOUT_MS = 3000;
+
 function runOne(cmd, args, input, timeoutMs, cwd) {
+  // 0, negative or not a number (e.g. an emptied setting) would time out at once: use the default instead.
+  if (!(timeoutMs > 0)) timeoutMs = DEFAULT_TIMEOUT_MS;
   return new Promise((resolve) => {
     const start = Date.now();
-    let out = '', err = '', timedOut = false, done = false;
+    let out = '', err = '', timedOut = false, done = false, exitCode;
     // UTF-8 so printing non-ASCII (★, Thai, ...) doesn't crash Python's default Windows codepage
     const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
     const child = spawn(cmd, args, { windowsHide: true, env, cwd, detached: process.platform !== 'win32' });
@@ -104,20 +127,32 @@ function runOne(cmd, args, input, timeoutMs, cwd) {
     child.stdout.on('data', (d) => { if (out.length < MAX_OUTPUT) out += d; });
     child.stderr.on('data', (d) => { if (err.length < MAX_OUTPUT) err += d; });
     child.on('error', (e) => finish({ spawnError: e.message }));
-    child.on('close', (code) => finish({ code }));
+    // Normally 'close' follows 'exit' at once. If the program started something that still holds its output
+    // open, don't wait for the time limit: end the run with the program's own exit code and stop the leftovers.
+    child.on('exit', (code) => {
+      exitCode = code;
+      setTimeout(() => {
+        if (done) return;
+        killTree(child);
+        child.stdout.destroy(); child.stderr.destroy();
+        finish({ code });
+      }, EXIT_GRACE_MS);
+    });
+    child.on('close', (code) => finish({ code: exitCode !== undefined ? exitCode : code }));
     child.stdin.on('error', () => {}); // program exited without reading all input
     child.stdin.end(input);
   });
 }
 
-// -> [{ verdict: 'PASS'|'FAIL'|'TLE'|'RE'|'SKIP', ms, stdout, stderr }]
-// SKIP: the grader only shows the start of this test's input, so it can't be run locally.
+// -> [{ verdict: 'PASS'|'FAIL'|'TLE'|'RE'|'SKIP', ms, stdout, stderr, skipped? }]
+// SKIP: the grader only shows the start of this test's input (skipped: 'input'), so it can't be run locally,
+// or so little of the expected output that there is nothing to compare (skipped: 'output').
 async function runTests(file, cases, cfg) {
   const prep = await prepare(file, cfg);
   try {
     const results = [];
     for (const tc of cases) {
-      if (tc.partialInput) { results.push({ verdict: 'SKIP', ms: 0, stdout: '', stderr: '' }); continue; }
+      if (tc.partialInput) { results.push({ verdict: 'SKIP', skipped: 'input', ms: 0, stdout: '', stderr: '' }); continue; }
       const box = dataSandbox(tc.files);
       let r;
       try {
@@ -128,8 +163,9 @@ async function runTests(file, cases, cfg) {
       let verdict = 'PASS';
       if (r.timedOut) verdict = 'TLE';
       else if (r.code !== 0) verdict = 'RE';
+      else if (cmp.unchecked) verdict = 'SKIP';
       else if (normalize(cmp.actual) !== normalize(cmp.expected)) verdict = 'FAIL';
-      results.push({ verdict, ms: r.ms, stdout: r.stdout, stderr: r.stderr });
+      results.push({ verdict, ms: r.ms, stdout: r.stdout, stderr: r.stderr, ...(verdict === 'SKIP' ? { skipped: 'output' } : {}) });
     }
     return results;
   } finally {
@@ -141,8 +177,9 @@ async function runTests(file, cases, cfg) {
 // -> { verdict: 'OK'|'TLE'|'RE', ms, stdout, stderr }
 async function runSingle(file, input, cfg, files) {
   const prep = await prepare(file, cfg);
-  const box = dataSandbox(files);
+  let box = null;
   try {
+    box = dataSandbox(files);
     const r = await runOne(prep.cmd, prep.args, mapDataPaths(input, files), cfg.timeoutMs, box && box.dir);
     if (r.spawnError) throw new Error(`Could not start "${prep.cmd}": ${r.spawnError}`);
     const verdict = r.timedOut ? 'TLE' : r.code !== 0 ? 'RE' : 'OK';
@@ -153,4 +190,4 @@ async function runSingle(file, input, cfg, files) {
   }
 }
 
-module.exports = { runTests, runSingle, normalize, mapDataPaths };
+module.exports = { runTests, runSingle, normalize, mapDataPaths, findPython, prepare }; // findPython and prepare: for tests

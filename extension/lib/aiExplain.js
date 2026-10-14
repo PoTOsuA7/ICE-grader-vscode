@@ -3,7 +3,7 @@
 // Calls the REST endpoint with plain fetch, like lib/client.js does for the grader, so the
 // extension still needs no npm packages. Nothing is sent anywhere unless the user runs the
 // command - never as part of run-on-save or submit.
-const { firstDifference } = require('./diff');
+const { firstDifference, comparedOutputs } = require('./diff');
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MAX_FAILURES = 3; // failing tests sent per request; usually they share one bug
@@ -20,12 +20,15 @@ replacement) is fine if it helps explain a concept. Keep the whole answer under 
 
 const clip = (s) => (s.length > MAX_FIELD ? s.slice(0, MAX_FIELD) + '\n... (truncated)' : s);
 
-// failure: { n, testInput, expected?, actual, stderr?, verdict }
-function describeFailure({ n, testInput, expected, actual, stderr, verdict }) {
+// failure: { n, testInput, expected?, partialOutput?, actual, stderr?, verdict }
+function describeFailure({ n, testInput, expected, partialOutput, actual, stderr, verdict }) {
   const lines = [`### Test ${n} - ${verdict}`, 'Input:', '```', clip(testInput || '(empty)'), '```'];
   if (expected !== undefined) {
     lines.push('Expected output:', '```', clip(expected), '```');
-    const d = firstDifference(expected, actual || '');
+    // Same comparison as the runner: for a cut-off expected output only the visible part counts.
+    const cmp = comparedOutputs({ output: expected, partialOutput }, actual || '');
+    if (partialOutput) lines.push('(Only the start of the expected output is known - the grader shows a 2 KB preview. Nothing after it was checked.)');
+    const d = cmp.unchecked ? null : firstDifference(cmp.expected, cmp.actual);
     // Hand the model the diff we already computed, so it doesn't have to re-derive it and can't get it wrong.
     if (d) lines.push(`(First difference from expected: ${d.kind === 'differs' ? `line ${d.line}, column ${d.index + 1}` : `line ${d.line} (${d.kind} line)`})`);
   }
@@ -102,6 +105,7 @@ async function callGemini(apiKey, models, prompt, { retryDelays = RETRY_DELAYS_M
     generationConfig: { maxOutputTokens: 4096, thinkingConfig: { thinkingLevel: 'low' } },
   };
   const tried = [...new Set(models.filter(Boolean))];
+  if (!tried.length) throw new Error('No Gemini model is set. Set nattee.geminiModel in Settings.');
   let res, data, model;
   for (model of tried) {
     ({ res, data } = await askModel(apiKey, model, body, retryDelays));
@@ -126,10 +130,11 @@ async function callGemini(apiKey, models, prompt, { retryDelays = RETRY_DELAYS_M
   const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
   const text = parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('').trim();
   if (!text) throw new Error('Gemini returned no explanation.');
-  return { text, model };
+  return { text, model, fallback: model !== tried[0] };
 }
 
-// -> { text, model } where model is the one that actually answered
+// -> { text, model, fallback } where model is the one that actually answered, and fallback says whether the
+// first model was overloaded so a later one answered instead
 async function explainFailures(apiKey, models, context, opts) {
   return callGemini(apiKey, Array.isArray(models) ? models : [models], buildPrompt(context), opts);
 }

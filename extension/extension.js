@@ -26,7 +26,26 @@ function activate(context) {
 
   const setLoggedIn = (v) => vscode.commands.executeCommand('setContext', 'nattee.loggedIn', v);
 
+  // The grader the password is for. It is only ever sent there, and only over https (http just for a local test
+  // server), so changing nattee.rootUrl can't send a saved password somewhere else.
+  const DEFAULT_ORIGIN = 'https://2190101.nattee.net';
+  function graderOrigin() {
+    const u = new URL(cfg().get('rootUrl'));
+    if (u.protocol !== 'https:' && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname)) {
+      throw new Error(`nattee.rootUrl must start with https:// (got ${u.origin}) - your password would be sent unencrypted.`);
+    }
+    return u.origin;
+  }
+
+  // A saved sign-in exists and it is for the grader in nattee.rootUrl.
+  async function signedInHere() {
+    if (!(await context.secrets.get('nattee.uid'))) return false;
+    const savedFor = (await context.secrets.get('nattee.origin')) || DEFAULT_ORIGIN;
+    try { return graderOrigin() === savedFor; } catch { return false; }
+  }
+
   async function connect(uid, password) {
+    graderOrigin();
     const c = new GraderClient(cfg().get('rootUrl'));
     await c.login(uid, password);
     client = c;
@@ -37,6 +56,11 @@ function activate(context) {
     const uid = await context.secrets.get('nattee.uid');
     const pw = await context.secrets.get('nattee.password');
     if (!uid || !pw) throw new Error('Not signed in. Run "Nattee: Sign In".');
+    // Sign-ins from before the origin was saved were for the default grader.
+    const savedFor = (await context.secrets.get('nattee.origin')) || DEFAULT_ORIGIN;
+    if (graderOrigin() !== savedFor) {
+      throw new Error(`Not signed in to ${graderOrigin()} (your saved sign-in is for ${savedFor}). Run "Nattee: Sign In".`);
+    }
     await connect(uid, pw);
     return client;
   }
@@ -61,13 +85,17 @@ function activate(context) {
     try { problems = JSON.parse(fs.readFileSync(cachedProblemsFile(), 'utf8')); } catch { problems = []; }
   }
 
+  // All problems with tests are kept (so linking still works); hideExams only filters what is listed.
   async function refreshProblems() {
     const list = await withClient((c) => c.listProblems());
-    problems = list.filter((p) => p.hasTestcases && !(cfg().get('hideExams') && (EXAM.test(p.code) || EXAM.test(p.name))));
+    problems = list.filter((p) => p.hasTestcases);
     fs.mkdirSync(cacheRoot(), { recursive: true });
     fs.writeFileSync(cachedProblemsFile(), JSON.stringify(problems));
     tree.fire();
+    updateEditorState(); // the open file may only now match a problem
   }
+
+  const visibleProblems = () => problems.filter((p) => !(cfg().get('hideExams') && (EXAM.test(p.code) || EXAM.test(p.name))));
 
   const groupOf = (p) => chapterOf(p.code);
 
@@ -77,9 +105,10 @@ function activate(context) {
     getTreeItem(el) { return el; }
     getChildren(el) {
       if (!el) {
-        const groups = [...new Set(problems.map(groupOf))].sort();
+        const shown = visibleProblems();
+        const groups = [...new Set(shown.map(groupOf))].sort();
         return groups.map((g) => {
-          const inGroup = problems.filter((p) => groupOf(p) === g);
+          const inGroup = shown.filter((p) => groupOf(p) === g);
           const item = new vscode.TreeItem(g, vscode.TreeItemCollapsibleState.Collapsed);
           item.groupKey = g;
           item.description = `${inGroup.filter((p) => p.status === 'solved').length}/${inGroup.length} solved`;
@@ -87,7 +116,7 @@ function activate(context) {
           return item;
         });
       }
-      return problems.filter((p) => groupOf(p) === el.groupKey).sort((a, b) => a.code.localeCompare(b.code)).map((p) => {
+      return visibleProblems().filter((p) => groupOf(p) === el.groupKey).sort((a, b) => a.code.localeCompare(b.code)).map((p) => {
         const item = new vscode.TreeItem(p.code, vscode.TreeItemCollapsibleState.None);
         const title = p.name.replace(/^\d+_[A-Za-z]+_/, '').replace(/_/g, ' ');
         item.description = p.status === 'inprogress' ? `${title} · ${p.score}` : title;
@@ -131,10 +160,17 @@ function activate(context) {
   let statementPanel = null;
   let shownProblem = null;
 
+  // preserveFocus true = opened automatically (switching to a linked file); false = the user asked for it.
   async function showStatement(p, preserveFocus = true) {
     if (shownProblem === p.id && statementPanel) { statementPanel.reveal(vscode.ViewColumn.Beside, preserveFocus); return; }
+    if (shownProblem === p.id && preserveFocus) return; // a non-PDF statement already opened beside the code
     const file = await getStatement(p);
-    if (path.extname(file) !== '.pdf') { await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file)); return; }
+    if (path.extname(file) !== '.pdf') {
+      // Not a PDF (HTML, text, ...): open it beside the code like the PDF viewer, without taking focus.
+      await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file), { viewColumn: vscode.ViewColumn.Beside, preserveFocus, preview: true });
+      shownProblem = p.id;
+      return;
+    }
     if (!statementPanel) {
       statementPanel = vscode.window.createWebviewPanel('natteeStatement', p.code,
         { viewColumn: vscode.ViewColumn.Beside, preserveFocus },
@@ -151,18 +187,25 @@ function activate(context) {
   // ------------------------------------------------------ file <-> problem
   const links = () => context.globalState.get('nattee.links', {});
   const linkKey = (f) => path.normalize(f).toLowerCase();
-  // Explicit link first; otherwise a file named after a problem code (05_List_15.py) links itself.
+  // Explicit link first; otherwise a solution file named after a problem code (05_List_15.py) links itself.
+  // Only source files: notes or inputs such as 05_List_15_input.txt must not get Run/Submit.
+  const SOURCE_EXTS = ['.py', '.cpp', '.c'];
   const linkedProblem = (file) => {
     const id = links()[linkKey(file)];
     const explicit = id && problems.find((p) => p.id === id);
     if (explicit) return explicit;
+    if (!SOURCE_EXTS.includes(path.extname(file).toLowerCase())) return undefined;
     const stem = path.basename(file, path.extname(file));
     return problems.find((p) => {
       const code = safeName(p.code);
       return stem.startsWith(code) && !/^\d/.test(stem.slice(code.length));
     });
   };
-  const setLink = (file, id) => context.globalState.update('nattee.links', { ...links(), [linkKey(file)]: id });
+  const setLink = (file, id) => {
+    const run = lastRun.get(file);
+    if (run && run.problemId !== id) lastRun.delete(file); // those results were for another problem
+    return context.globalState.update('nattee.links', { ...links(), [linkKey(file)]: id });
+  };
 
   function updateEditorState() {
     const ed = vscode.window.activeTextEditor;
@@ -176,7 +219,7 @@ function activate(context) {
   async function pickProblem() {
     if (!problems.length) await refreshProblems();
     const pick = await vscode.window.showQuickPick(
-      problems.map((p) => ({ label: p.code, description: p.name, p })), { placeHolder: 'Choose a problem', matchOnDescription: true });
+      visibleProblems().map((p) => ({ label: p.code, description: p.name, p })), { placeHolder: 'Choose a problem', matchOnDescription: true });
     return pick && pick.p;
   }
 
@@ -224,6 +267,7 @@ function activate(context) {
     await connect(uid, password);
     await context.secrets.store('nattee.uid', uid);
     await context.secrets.store('nattee.password', password);
+    await context.secrets.store('nattee.origin', graderOrigin());
     await setLoggedIn(true);
     await refreshProblems();
     vscode.window.showInformationMessage(`Nattee: signed in, ${problems.length} problems loaded.`);
@@ -233,8 +277,10 @@ function activate(context) {
     client = null; problems = [];
     await context.secrets.delete('nattee.uid');
     await context.secrets.delete('nattee.password');
+    await context.secrets.delete('nattee.origin');
     await setLoggedIn(false);
     tree.fire();
+    updateEditorState();
   });
 
   reg('nattee.refresh', refreshProblems);
@@ -243,14 +289,20 @@ function activate(context) {
     fs.rmSync(cacheRoot(), { recursive: true, force: true });
     problems = [];
     tree.fire();
+    updateEditorState();
     if (client || await context.secrets.get('nattee.uid')) await refreshProblems();
     vscode.window.showInformationMessage('Nattee: cache cleared, statements and test cases will be downloaded again.');
   });
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration('nattee.hideExams')) tree.fire();
     if (!e.affectsConfiguration('nattee.rootUrl')) return;
-    client = null; loadCachedProblems(); tree.fire();
-    context.secrets.get('nattee.uid').then((u) => u && refreshProblems()).catch(fail);
+    client = null; loadCachedProblems(); tree.fire(); updateEditorState();
+    // Sign in again automatically only on the grader the saved password belongs to.
+    signedInHere().then(async (ok) => {
+      await setLoggedIn(ok);
+      if (ok) await refreshProblems();
+    }).catch(fail);
   }));
 
   reg('nattee.openProblem', async (item) => {
@@ -271,6 +323,8 @@ function activate(context) {
     const [existing] = await vscode.workspace.findFiles(
       new vscode.RelativePattern(folder, `**/${safeName(p.code)}${ext}`), '**/{node_modules,.git}/**', 1);
     const file = existing ? existing.fsPath : solutionPath(folder.uri.fsPath, p.code, ext, cfg().get('organizeByChapter'));
+    const rel = path.relative(folder.uri.fsPath, file);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`Refusing to create ${file}: it is outside the workspace folder.`);
     if (!fs.existsSync(file)) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, '');
@@ -302,7 +356,10 @@ function activate(context) {
     pythonPath: cfg().get('pythonPath'), cppCompiler: cfg().get('cppCompiler'), cCompiler: cfg().get('cCompiler'),
     timeoutMs: cfg().get('timeLimitSeconds') * 1000,
   });
-  const lastRun = new Map(); // file -> { source, cases, results }, for submit's note and AI Explain
+  // file -> { problemId, source, cases, results } of the last full run, for submit's note and AI Explain.
+  const lastRun = new Map();
+  // The last run of this file, if it was for this problem.
+  const lastRunFor = (file, p) => { const run = lastRun.get(file); return run && p && run.problemId === p.id ? run : null; };
   const isFailure = (r) => r.verdict !== 'PASS' && r.verdict !== 'SKIP';
   const tally = (results) => {
     const skipped = results.filter((r) => r.verdict === 'SKIP').length;
@@ -312,11 +369,33 @@ function activate(context) {
 
   function updateFailureContext() {
     const ed = vscode.window.activeTextEditor;
-    const run = ed && lastRun.get(ed.document.fileName);
+    const run = ed && lastRunFor(ed.document.fileName, linkedProblem(ed.document.fileName));
     vscode.commands.executeCommand('setContext', 'nattee.hasFailure', !!run && run.results.some(isFailure));
   }
 
+  // One test run at a time. A save while tests run queues one more automatic run afterwards, so the newest
+  // code always gets tested. Saves the extension makes itself (before a run or submit) don't start a run.
+  let running = false, rerunQueued = false, ownSave = false;
+  async function saveQuietly(doc) {
+    ownSave = true;
+    try { await doc.save(); } finally { ownSave = false; }
+  }
+
   async function runActive(auto) {
+    if (running) {
+      if (auto) rerunQueued = true; else vscode.window.showInformationMessage('Nattee: tests are already running.');
+      return;
+    }
+    running = true;
+    try {
+      await runActiveNow(auto);
+    } finally {
+      running = false;
+      if (rerunQueued) { rerunQueued = false; runActive(true).catch(fail); }
+    }
+  }
+
+  async function runActiveNow(auto) {
     const ed = vscode.window.activeTextEditor;
     if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
     let p = linkedProblem(ed.document.fileName);
@@ -327,7 +406,8 @@ function activate(context) {
       await setLink(ed.document.fileName, p.id);
       updateEditorState();
     }
-    await ed.document.save();
+    await saveQuietly(ed.document);
+    const source = ed.document.getText(); // the code being tested, before any edits made while it runs
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Running ${p.code}...` }, async () => {
       const cases = await getTests(p);
       let results;
@@ -338,7 +418,7 @@ function activate(context) {
         throw e;
       }
       const t = tally(results);
-      lastRun.set(ed.document.fileName, { source: ed.document.getText(), cases, results });
+      lastRun.set(ed.document.fileName, { problemId: p.id, source, cases, results });
       updateFailureContext();
       showView(localResultsHtml(p, cases, results), `${p.code}: ${t.passed}/${t.ran}`);
       (t.passed === t.ran ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(
@@ -348,12 +428,10 @@ function activate(context) {
 
   reg('nattee.runTests', () => runActive(false));
 
-  let running = false;
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((doc) => {
     const ed = vscode.window.activeTextEditor;
-    if (running || !cfg().get('runOnSave') || !ed || ed.document !== doc || !linkedProblem(doc.fileName)) return;
-    running = true;
-    runActive(true).catch(fail).finally(() => { running = false; });
+    if (ownSave || !cfg().get('runOnSave') || !ed || ed.document !== doc || !linkedProblem(doc.fileName)) return;
+    runActive(true).catch(fail);
   }));
 
   // Run one chosen test, or your own input, and show the output.
@@ -383,7 +461,7 @@ function activate(context) {
       input = typed.replace(/\\n/g, '\n'); title = 'Custom input';
     }
     if (!input.endsWith('\n')) input += '\n';
-    await ed.document.save();
+    await saveQuietly(ed.document);
     const files = cases.length ? cases[0].files : undefined; // so custom input can name /data/... files too
     const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Running...' },
       () => runSingle(ed.document.fileName, input, runCfg(), files));
@@ -396,11 +474,11 @@ function activate(context) {
     if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
     const p = linkedProblem(ed.document.fileName);
     if (!p) throw new Error('This file is not linked to a problem. Use "Nattee: Link Current File to Problem".');
-    await ed.document.save();
+    await saveQuietly(ed.document);
     const source = ed.document.getText();
     if (!source.trim()) throw new Error('The file is empty.');
     await refreshProblems(); // also makes sure the session is still valid before we send anything
-    const local = lastRun.get(ed.document.fileName);
+    const local = lastRunFor(ed.document.fileName, p);
     const localNote = !local || local.source !== source ? 'Local tests have not been run on this version.'
       : `Local tests: ${tally(local.results).text}.`;
     const choice = await vscode.window.showWarningMessage(
@@ -452,14 +530,14 @@ function activate(context) {
   reg('nattee.explainFailure', async () => {
     const ed = vscode.window.activeTextEditor;
     if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
-    const run = lastRun.get(ed.document.fileName);
+    const p = linkedProblem(ed.document.fileName);
+    const run = lastRunFor(ed.document.fileName, p);
     const failing = run ? run.results.map((r, i) => ({ r, i })).filter((x) => isFailure(x.r)) : [];
     if (!failing.length) throw new Error('No failing test to explain. Run the tests first (▶) - if they all pass, there is nothing to explain.');
 
     const apiKey = await ensureGeminiKey();
     if (!apiKey) return;
 
-    const p = linkedProblem(ed.document.fileName);
     const stale = run.source !== ed.document.getText();
     const context_ = {
       code: run.source,
@@ -469,28 +547,28 @@ function activate(context) {
       dataFiles: run.cases[0] && run.cases[0].files,
       failures: failing.slice(0, MAX_FAILURES).map(({ r, i }) => ({
         n: i + 1, testInput: run.cases[i].input, expected: run.cases[i].output,
-        actual: r.stdout, stderr: r.stderr, verdict: r.verdict,
+        partialOutput: !!run.cases[i].partialOutput, actual: r.stdout, stderr: r.stderr, verdict: r.verdict,
       })),
     };
     const shown = context_.failures.map((f) => f.n);
     const model = cfg().get('geminiModel');
-    const { text, model: answeredBy } = await vscode.window.withProgress(
+    const { text, model: answeredBy, fallback } = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Asking Gemini why test${shown.length > 1 ? 's' : ''} ${shown.join(', ')} fail${shown.length > 1 ? '' : 's'}...` },
       () => explainFailures(apiKey, [model, cfg().get('geminiFallbackModel')], context_));
     const more = failing.length > shown.length ? ` (${failing.length} failing, first ${shown.length} sent)` : '';
     const title = `${p ? p.code + ' — ' : ''}Test${shown.length > 1 ? 's' : ''} ${shown.join(', ')} explained${more}`;
     const notes = [];
     if (stale) notes.push('Note: you have edited the file since the tests ran - the explanation is for the version you last ran.');
-    if (answeredBy !== model) notes.push(`${model} was overloaded, so ${answeredBy} answered instead.`);
+    if (fallback) notes.push(`${model} was overloaded, so ${answeredBy} answered instead.`);
     showView(explanationHtml(title, notes.join(' ') || null, text), `AI explanation (${answeredBy})`);
   });
 
   // ------------------------------------------------------------------ start
   loadCachedProblems();
   updateEditorState();
-  context.secrets.get('nattee.uid').then(async (uid) => {
-    await setLoggedIn(!!uid);
-    if (uid) refreshProblems().catch(() => {}); // keeps the solved/score marks current
+  signedInHere().then(async (ok) => {
+    await setLoggedIn(ok);
+    if (ok) refreshProblems().catch(() => {}); // keeps the solved/score marks current
     updateEditorState();
     tree.fire();
   });

@@ -73,6 +73,15 @@ function parseSubmitForm(html) {
   return { token: token ? decodeEntities(token[1]) : null, problemId: pid ? pid[1] : null, languages };
 }
 
+// The login form is still on the page: the session expired, or a login was refused.
+const isLoginPage = (html) => /<input[^>]*name=["']password["']/i.test(html) || /action=["'][^"']*login\/login["']/i.test(html);
+const looksLikeGraderPage = (html) => /main\/list|logout/i.test(html);
+// Text of the page's alert/flash message, if it shows one.
+function flashText(html) {
+  const m = /<div[^>]*class=["'][^"']*alert[^"']*["'][^>]*>([\s\S]*?)<\/div>/i.exec(html);
+  return m ? stripTags(m[1]).replace(/\s+/g, ' ').slice(0, 200) : '';
+}
+
 const UNITS = { byte: 1, bytes: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3 };
 const toBytes = (num, unit) => parseFloat(num.replace(/,/g, '')) * UNITS[unit.toLowerCase()];
 
@@ -115,7 +124,7 @@ function parseDataFiles(html) {
   return at < 0 ? [] : pageFiles(html.slice(at), capM ? toBytes(capM[1], capM[2]) : Infinity);
 }
 
-const LANGUAGE_PATTERNS ={ '.py': /python/i, '.cpp': /c\+\+|cpp/i, '.c': /^c$|^c\s|ansi c/i };
+const LANGUAGE_PATTERNS ={ '.py': /python/i, '.cpp': /c\+\+|cpp/i, '.c': /^c$|^c\s|\bansi c\b/i };
 
 class GraderClient {
   constructor(rootUrl) {
@@ -131,13 +140,17 @@ class GraderClient {
     }
   }
 
-  // fetch that keeps cookies across redirects and never waits forever.
+  // fetch that keeps cookies across redirects and never waits forever. Like a browser, the grader's cookies
+  // (the session = account access) only go to the grader's own origin, and never over plain http.
   async _request(url, opts = {}) {
+    const home = new URL(this.root);
     for (let hops = 0; hops < 8; hops++) {
+      const hop = new URL(url);
+      const sameSite = hop.origin === home.origin && !(home.protocol === 'https:' && hop.protocol !== 'https:');
       const headers = { ...(opts.headers || {}) };
-      if (this.cookies.size) headers.Cookie = [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
+      if (sameSite && this.cookies.size) headers.Cookie = [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ');
       const res = await fetch(url, { ...opts, headers, redirect: 'manual', signal: AbortSignal.timeout(30000) });
-      this._absorbCookies(res);
+      if (sameSite) this._absorbCookies(res);
       const loc = res.headers.get('location');
       if (res.status >= 300 && res.status < 400 && loc) {
         url = new URL(loc, url).href;
@@ -172,6 +185,8 @@ class GraderClient {
     const text = await res.text();
     if (!res.ok) throw new Error(`Login failed (${res.status})`);
     if (text.includes('Wrong password')) throw new Error('Wrong username or password');
+    // Any other refusal (disabled account, agreement not accepted, ...) also lands back on the login form.
+    if (isLoginPage(text)) throw new Error(`Login refused${flashText(text) ? `: ${flashText(text)}` : ' - the grader sent you back to the login page'}`);
   }
 
   async listProblems() {
@@ -188,7 +203,11 @@ class GraderClient {
     const type = (res.headers.get('content-type') || '').split(';')[0].trim();
     if (type === 'text/html') {
       const body = await res.text();
-      if (body.includes('authenticity_token')) throw new Error('Session expired while downloading the statement');
+      // Every Rails page has an authenticity_token meta tag, so look for the login form itself.
+      if (isLoginPage(body)) throw new Error('Session expired while downloading the statement');
+      if (looksLikeGraderPage(body)) {
+        throw new Error(`The grader did not return a statement for this problem${flashText(body) ? ` (${flashText(body)})` : ''}`);
+      }
       return { data: Buffer.from(body), ext: '.html' };
     }
     const fn = /filename="?([^";]+)"?/.exec(disp);
@@ -230,6 +249,9 @@ class GraderClient {
 }
 
 GraderClient.prototype.submit = async function submit(problemId, source, ext) {
+  // The previous submission's id, so a refused submit can't be mistaken for an old one.
+  const before = parseProblemList(await this._getText('main/list')).find((p) => p.id === String(problemId));
+  const previousId = before && before.lastSubmissionId ? Number(before.lastSubmissionId) : 0;
   const form = parseSubmitForm(await this._getText(`submissions/direct_edit_problem/${problemId}`));
   if (!form.token || !form.problemId) throw new Error('Could not read the submit form (session expired or the page layout changed)');
   const pattern = LANGUAGE_PATTERNS[ext.toLowerCase()];
@@ -247,13 +269,14 @@ GraderClient.prototype.submit = async function submit(problemId, source, ext) {
   const res = await this._request(this.root + 'main/submit', { method: 'POST', body });
   if (!res.ok) throw new Error(`Submit failed (${res.status})`);
   const html = await res.text();
-  // the grader redirects to the new submission; otherwise fall back to the newest one in the list
+  // The grader redirects to the new submission. Otherwise use the problem's newest submission, but only if it is
+  // newer than before: a refused submit (too long, problem closed, ...) re-renders the list with the old one.
   let id = /\/submissions\/(\d+)/.exec(res.url) ? /\/submissions\/(\d+)/.exec(res.url)[1] : null;
   if (!id) {
     const mine = parseProblemList(await this._getText('main/list')).find((p) => p.id === String(problemId));
-    id = mine && mine.lastSubmissionId;
+    if (mine && mine.lastSubmissionId && Number(mine.lastSubmissionId) > previousId) id = mine.lastSubmissionId;
   }
-  if (!id) throw new Error(`Submitted, but could not find the submission id. ${/error|invalid/i.test(html) ? 'The grader reported an error.' : ''}`);
+  if (!id) throw new Error(`The grader did not accept the submission${flashText(html) ? `: ${flashText(html)}` : '.'}`);
   return { id, language: lang.name };
 };
 

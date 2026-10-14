@@ -33,11 +33,21 @@ function firstDifference(expected, actual) {
 const visible = (s) => s.replace(/ /g, '·').replace(/\t/g, '→').replace(/\r/g, '␍');
 
 // What to compare for a test. When only the first part of the expected output is known (partialOutput),
-// check the complete lines of that part against the same number of lines of the program's output.
+// check the complete lines of that part against the same lines of the program's output, and the last visible
+// line (which may be cut mid-way) as the start of the program's next line. -> { expected, actual, unchecked? }
+// unchecked: nothing of the expected output is known, so any output would "match".
 function comparedOutputs(tc, actual) {
   if (!tc.partialOutput) return { expected: tc.output, actual };
-  const known = normLines(tc.output).slice(0, -1); // the last visible line may be cut mid-way
-  return { expected: known.join('\n'), actual: normLines(actual).slice(0, known.length).join('\n') };
+  const shown = normLines(tc.output);
+  const complete = shown.slice(0, -1);
+  // Drop the last character of the cut line too: the 2 KB cut can split a multi-byte character.
+  const cut = (shown[shown.length - 1] || '').slice(0, -1);
+  if (!complete.length && !cut) return { expected: '', actual: '', unchecked: true };
+  const mine = normLines(actual);
+  const expected = cut ? [...complete, cut] : complete;
+  const got = mine.slice(0, complete.length);
+  if (cut && mine.length > complete.length) got.push(mine[complete.length].slice(0, cut.length));
+  return { expected: expected.join('\n'), actual: got.join('\n') };
 }
 
 module.exports = { normLines, normalize, firstDifference, visible, comparedOutputs };

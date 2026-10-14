@@ -78,6 +78,7 @@ function fakeServer() {
       return respond('', { status: 302, headers: { location: '/submissions/777' } }, url);
     }
     if (u.pathname === '/submissions/777') return respond('graded', { status: 200 }, url);
+    if (u.pathname === '/main/list') return respond('<table></table>', { status: 200 }, url);
     if (u.pathname.startsWith('/submissions/direct_edit_problem/')) return respond(formHtml, { status: 200 }, url);
     return respond('nope', { status: 404 }, url);
   };

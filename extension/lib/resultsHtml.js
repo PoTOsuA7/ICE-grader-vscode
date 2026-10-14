@@ -49,6 +49,7 @@ function diffHtml(expected, actual) {
 }
 
 const SKIP_NOTE = '<div class="hint">The grader only shows the start of this test\'s input, so it can\'t be run here. Submit to check it.</div>';
+const SKIP_OUTPUT_NOTE = '<div class="hint">The grader shows too little of this test\'s expected output to check it here. Submit to check it.</div>';
 const PARTIAL_NOTE = '<div class="hint">The grader only shows the start of the expected output, so only those lines were checked.</div>';
 
 // results: from runTests(); cases: [{input, output, partialInput?, partialOutput?}]
@@ -61,7 +62,7 @@ function localResultsHtml(problem, cases, results) {
     const cmp = comparedOutputs(tc, r.stdout);
     const extra = r.verdict === 'FAIL' ? diffHtml(cmp.expected, cmp.actual)
       : r.verdict === 'TLE' ? '<div class="diff"><b>Time limit exceeded.</b> Your program did not finish in time.</div>'
-        : r.verdict === 'SKIP' ? SKIP_NOTE : '';
+        : r.verdict === 'SKIP' ? (r.skipped === 'output' ? SKIP_OUTPUT_NOTE : SKIP_NOTE) : '';
     return `<details ${i === firstBad ? 'open' : ''}>
       <summary><span class="v ${r.verdict}">${r.verdict}</span> Test ${i + 1} <span class="ms">${r.ms} ms</span></summary>
       ${extra}${tc.partialOutput && r.verdict !== 'SKIP' ? PARTIAL_NOTE : ''}

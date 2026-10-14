@@ -9,6 +9,7 @@ const { parseTestcasePage, GraderClient } = require('../lib/client');
 const { comparedOutputs } = require('../lib/diff');
 const { runTests, runSingle } = require('../lib/runner');
 const { localResultsHtml } = require('../lib/resultsHtml');
+const { havePython } = require('./helpers');
 
 // Same markup as the real page, with made-up data.
 const file = (label, size, text) => `<div class='col-md-6'>
@@ -97,9 +98,11 @@ test('when downloads are blocked, a web page is never saved as a test; the visib
   } finally { g.restore(); }
 });
 
-test('a partly known expected output is checked on its complete lines only', () => {
+test('a partly known expected output is checked on its complete lines and the start of the cut line', () => {
   const tc = { output: 'a\nb\nc-cut-mid', partialOutput: true };
-  assert.deepStrictEqual(comparedOutputs(tc, 'a\nb\nc-full\nd\n'), { expected: 'a\nb', actual: 'a\nb' });
+  // the cut line loses its last character (it may be half of a multi-byte character)
+  assert.deepStrictEqual(comparedOutputs(tc, 'a\nb\nc-cut-middle\nd\n'), { expected: 'a\nb\nc-cut-mi', actual: 'a\nb\nc-cut-mi' });
+  assert.deepStrictEqual(comparedOutputs(tc, 'a\nb\nc-full\nd\n'), { expected: 'a\nb\nc-cut-mi', actual: 'a\nb\nc-full' });
   assert.deepStrictEqual(comparedOutputs({ output: 'x\n' }, 'y\n'), { expected: 'x\n', actual: 'y\n' });
 });
 
@@ -108,7 +111,7 @@ test('runner skips a test whose input is only partly known and checks partial ou
   const f = path.join(dir, 'sol.py');
   fs.writeFileSync(f, 'for i in range(int(input())): print(i)');
   const cfg = { pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', timeoutMs: 10000 };
-  try { await runSingle(f, '1\n', cfg); } catch { return t.skip('no python'); }
+  if (!(await havePython(t))) return;
   const cases = [
     { input: '5\n', output: '0\n1\n2\n3', partialOutput: true },
     { input: '5\n', output: '0\n9\n2\n3', partialOutput: true },
@@ -151,7 +154,7 @@ test('a program that opens /data/... from its input runs against the data files'
   const f = path.join(dir, 'sol.py');
   fs.writeFileSync(f, 'a, b = input().split()\nprint(open(a).read().strip(), len(open(b).read()))');
   const cfg = { pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', timeoutMs: 10000 };
-  try { await runSingle(f, '1\n', cfg); } catch { return t.skip('no python'); }
+  if (!(await havePython(t))) return;
   const files = { 'a.txt': 'hello', 'b.txt': '' };
   const cases = [{ input: '/data/a.txt /data/b.txt\n', output: 'hello 0\n', files }];
   assert.deepStrictEqual((await runTests(f, cases, cfg)).map((r) => r.verdict), ['PASS']);
@@ -167,4 +170,67 @@ test('fetchTestcases attaches the data files to every test', async () => {
     const cases = await new GraderClient('https://grader.test/').fetchTestcases(1);
     assert.deepStrictEqual(cases.map((c) => c.files), [{ 'd.txt': 'hi' }, { 'd.txt': 'hi' }]);
   } finally { g.restore(); }
+});
+
+// ---- review fixes: cut-off single-line outputs, data file named "data", programs that leave a child running
+const { comparedOutputs: cmpOut } = require('../lib/diff');
+
+test('a cut-off output that is one long line is still checked (as a prefix), not passed blindly', () => {
+  const tc = { output: '1 2 3 4 5 6 7 8 9 '.repeat(120), partialOutput: true };
+  assert.notStrictEqual(cmpOut(tc, 'WRONG\n').expected, cmpOut(tc, 'WRONG\n').actual);
+  const right = cmpOut(tc, '1 2 3 4 5 6 7 8 9 '.repeat(200) + '\n');
+  assert.strictEqual(right.expected, right.actual);
+  assert.ok(right.expected.length > 1000);
+  assert.strictEqual(cmpOut({ output: 'x', partialOutput: true }, 'anything').unchecked, true);
+  // complete lines plus a cut last line
+  const two = { output: 'a\nbcd-cut', partialOutput: true };
+  assert.strictEqual(cmpOut(two, 'a\nbcd-cut-and-more\n').expected, cmpOut(two, 'a\nbcd-cut-and-more\n').actual);
+  assert.notStrictEqual(cmpOut(two, 'a\nzzz\n').expected, cmpOut(two, 'a\nzzz\n').actual);
+});
+
+const PY_CFG = { pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', timeoutMs: 10000 };
+async function pyFile(t, src) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nattee-rv-'));
+  const f = path.join(dir, 'sol.py');
+  fs.writeFileSync(f, src);
+  if (!(await havePython(t))) return null;
+  return f;
+}
+const sandboxes = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('nattee-data-')).length;
+
+test('runner: a long cut-off line is FAIL for a wrong program, PASS for a right one, SKIP when nothing is known', async (t) => {
+  const f = await pyFile(t, 'print(input())');
+  if (!f) return;
+  const line = '7 '.repeat(1500);
+  const cases = [
+    { input: 'nope\n', output: line, partialOutput: true },
+    { input: line + '\n', output: line, partialOutput: true },
+    { input: 'x\n', output: 'q', partialOutput: true },
+  ];
+  const res = await runTests(f, cases, PY_CFG);
+  assert.deepStrictEqual(res.map((r) => r.verdict), ['FAIL', 'PASS', 'SKIP']);
+  assert.strictEqual(res[2].skipped, 'output');
+  assert.match(localResultsHtml({ code: 'X' }, cases, res), /too little of this test&#39;s expected output|too little of this test's expected output/);
+});
+
+test('a data file named "data" works and leaves no temp folder behind', async (t) => {
+  const f = await pyFile(t, 'print(open(input().strip()).read().strip())');
+  if (!f) return;
+  const before = sandboxes();
+  const res = await runTests(f, [{ input: '/data/data\n', output: 'x\n', files: { data: 'x\n', '': 'ignored', '..': 'ignored' } }], PY_CFG);
+  assert.deepStrictEqual(res.map((r) => r.verdict), ['PASS']);
+  assert.strictEqual(sandboxes(), before);
+});
+
+test('a program that exits but leaves a child holding its output is not a TLE', async (t) => {
+  const f = await pyFile(t, [
+    'import subprocess, sys',
+    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4)'])",
+    'print(5)',
+  ].join('\n'));
+  if (!f) return;
+  const started = Date.now();
+  const res = await runTests(f, [{ input: '\n', output: '5\n', files: { 'x.txt': '1' } }], { ...PY_CFG, timeoutMs: 3000 });
+  assert.deepStrictEqual(res.map((r) => r.verdict), ['PASS']);
+  assert.ok(Date.now() - started < 2500, `took ${Date.now() - started} ms`);
 });

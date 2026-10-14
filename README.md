@@ -26,7 +26,7 @@ Everything from the NatteeGrader website inside VS Code, so you never alt-tab:
     overloaded, the extension retries twice and then asks `nattee.geminiFallbackModel` (default `gemini-3.5-flash`).
 - Test cases are read from the grader's test case page and cached locally. The grader shows only the first 2 KB
   of each file: a test whose input is longer shows as SKIP (submit to check it), and a longer expected output is
-  checked on the part that's shown. Credentials (grader and Gemini key) are
+  checked on the part that's shown (SKIP if too little of it is shown to compare). Credentials (grader and Gemini key) are
   kept in VS Code's secret storage, not a temp file.
 
 ## Install
@@ -45,6 +45,7 @@ Or download `nattee-grader.vsix` from [Releases](https://github.com/PoTOsuA7/ICE
 3. Click ▶ to run the tests, or just save the file: tests run automatically on save (`nattee.runOnSave`).
 
 Settings (`nattee.*`): `rootUrl`, `hideExams`, `defaultExtension`, `organizeByChapter`, `pythonPath`, `cppCompiler`, `cCompiler`, `timeLimitSeconds`, `runOnSave`, `geminiModel`, `geminiFallbackModel`.
+`rootUrl` can only be set in user settings and must be https; your saved sign-in is only ever sent to the grader you signed in to.
 
 ## Layout
 - `extension/` — the VS Code extension (plain JS, no build step). `lib/client.js` talks to the grader,
@@ -54,7 +55,7 @@ Settings (`nattee.*`): `rootUrl`, `hideExams`, `defaultExtension`, `organizeByCh
 ## Platforms
 Written to be cross-platform (Windows, macOS, Linux). The automated tests run on all three in CI
 (`.github/workflows/test.yml`), and it has been used by hand on Windows 11 only. Requires VS Code 1.90+ and
-Python (or `g++`/`gcc` for C/C++ solutions). On macOS the Python command is usually `python3`; the extension
+Python 3 (or `g++`/`gcc` for C/C++ solutions). On macOS the Python command is usually `python3`; the extension
 finds it automatically.
 
 ## Development
