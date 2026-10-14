@@ -2,7 +2,7 @@
   "name": "nattee-grader",
   "displayName": "ICE Nattee Grader",
   "description": "NatteeGrader (Chula 2190101) in VS Code: problem statements, test cases, run, submit and see your progress",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "publisher": "potosua7",
   "icon": "icon.png",
   "galleryBanner": {
@@ -175,11 +175,6 @@
           "default": "https://2190101.nattee.net/",
           "description": "Grader site URL (https). Only settable in user settings, so a workspace cannot send your saved password elsewhere; signing in is tied to this address.",
           "scope": "application"
-        },
-        "nattee.hideExams": {
-          "type": "boolean",
-          "default": true,
-          "description": "Hide exam problems."
         },
         "nattee.defaultExtension": {
           "type": "string",

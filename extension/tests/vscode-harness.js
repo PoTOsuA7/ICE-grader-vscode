@@ -10,12 +10,11 @@ const EXT = path.join(__dirname, '..');
 
 function loadExtension(opts = {}) {
   const events = { save: [], editor: [], config: [] };
-  const log = { errors: [], warnings: [], infos: [], executed: [], logins: [], runs: [], opened: [], submitted: [], status: 'hidden' };
-  const config = {
-    rootUrl: 'https://2190101.nattee.net/', hideExams: true, defaultExtension: '.py', organizeByChapter: true,
-    pythonPath: 'python', cppCompiler: 'g++', cCompiler: 'gcc', runOnSave: true, timeLimitSeconds: 3,
-    geminiModel: 'm', geminiFallbackModel: '', ...(opts.config || {}),
-  };
+  const log = { errors: [], warnings: [], infos: [], executed: [], logins: [], runs: [], opened: [], submitted: [], fetchedTests: [], status: 'hidden' };
+  // The settings' defaults from package.json, so the tests see what a fresh install sees.
+  const defaults = Object.entries(require('../package.json').contributes.configuration.properties)
+    .map(([k, v]) => [k.replace(/^nattee\./, ''), v.default]);
+  const config = { ...Object.fromEntries(defaults), ...(opts.config || {}) };
   const commands = {};
   const context = {};
   const secrets = new Map(Object.entries(opts.secrets || {}));
@@ -44,7 +43,7 @@ function loadExtension(opts = {}) {
     window: {
       activeTextEditor: undefined,
       onDidChangeActiveTextEditor: (f) => { events.editor.push(f); return { dispose() {} }; },
-      createStatusBarItem: () => ({ show() { log.status = 'shown'; }, hide() { log.status = 'hidden'; } }),
+      createStatusBarItem: () => (log.statusItem = { show() { log.status = 'shown'; }, hide() { log.status = 'hidden'; } }),
       registerTreeDataProvider: (id, t) => { log.tree = t; return { dispose() {} }; },
       registerWebviewViewProvider: () => ({ dispose() {} }),
       showErrorMessage: (m) => { log.errors.push(m); },
@@ -93,7 +92,7 @@ function loadExtension(opts = {}) {
     async login(uid, pw) { log.logins.push({ root: this.root, uid, pw }); }
     async listProblems() { return problems; }
     async fetchStatement() { return opts.statement || { data: Buffer.from('%PDF'), ext: '.pdf' }; }
-    async fetchTestcases() { return [{ input: '1\n', output: '1\n' }, { input: '2\n', output: '2\n' }]; }
+    async fetchTestcases(id) { log.fetchedTests.push(id); return [{ input: '1\n', output: '1\n' }, { input: '2\n', output: '2\n' }]; }
     async submit(id, source) { log.submitted.push({ id, source }); return { id: '9' }; }
     async waitForGrade() { return { points: 100, max: 100, tests: [], done: true }; }
   }

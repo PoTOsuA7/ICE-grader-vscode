@@ -2,13 +2,24 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
-const { chapterOf, solutionPath, safeName } = require('../lib/layout');
+const { chapterOf, solutionPath, safeName, isExam } = require('../lib/layout');
 
 test('chapterOf takes the first two parts of the code', () => {
   assert.strictEqual(chapterOf('05_List_15'), '05_List');
   assert.strictEqual(chapterOf('03_If_001'), '03_If');
   assert.strictEqual(chapterOf('P1_07_Biorhythm'), 'P1_07');
   assert.strictEqual(chapterOf('solo'), 'solo');
+});
+
+test('exam practice problems are grouped by exam number', () => {
+  assert.strictEqual(chapterOf('2025s1_Exam2_A1-1_Student'), 'Exam2');
+  assert.strictEqual(chapterOf('Exam1-2024_Q1A_student'), 'Exam1');
+  assert.strictEqual(chapterOf('Exam_01'), 'Exam1');
+  assert.strictEqual(chapterOf('2026s1_Exam3_A1-1_Student'), 'Exam3');
+  assert.strictEqual(chapterOf('Final_Exam_Q1'), 'Exam');
+  assert.strictEqual(chapterOf('08_Example_01'), '08_Example', '"Example" is not an exam');
+  assert.ok(isExam('Exam1-2024_Q1A_student') && isExam('2025s1_Exam2_B4-1_Student') && !isExam('08_Example_01'));
+  assert.strictEqual(solutionPath('ws', 'Exam1-2024_Q1A_student', '.py'), path.join('ws', 'Exam1', 'Exam1-2024_Q1A_student.py'));
 });
 
 test('solutionPath puts the file in its chapter folder by default', () => {

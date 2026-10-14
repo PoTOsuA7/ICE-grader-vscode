@@ -3,7 +3,9 @@
 Everything from the NatteeGrader website inside VS Code, so you never alt-tab:
 
 - **Sidebar** listing every problem by chapter, with your progress from the grader: a tick for solved,
-  a filled dot for in progress (with your best score), and `solved/total` per chapter. Exams are hidden by default.
+  a filled dot for in progress (with your best score), and `solved/total` per chapter. Exam practice problems are
+  grouped as Exam1, Exam2, ...; those without test cases on the grader are marked "no tests" (try your own input
+  with Run One Test, or submit).
 - **Statement viewer**: click a problem to read its PDF beside your code. Switching to a linked solution file
   re-opens its statement automatically.
 - **Auto-link**: a file named after a problem code (e.g. `05_List_15.py`) links itself, no setup.
@@ -44,7 +46,7 @@ Or download `nattee-grader.vsix` from [Releases](https://github.com/PoTOsuA7/ICE
    Or open any file and run **Nattee: Link Current File to Problem**.
 3. Click ▶ to run the tests, or just save the file: tests run automatically on save (`nattee.runOnSave`).
 
-Settings (`nattee.*`): `rootUrl`, `hideExams`, `defaultExtension`, `organizeByChapter`, `pythonPath`, `cppCompiler`, `cCompiler`, `timeLimitSeconds`, `runOnSave`, `geminiModel`, `geminiFallbackModel`.
+Settings (`nattee.*`): `rootUrl`, `defaultExtension`, `organizeByChapter`, `pythonPath`, `cppCompiler`, `cCompiler`, `timeLimitSeconds`, `runOnSave`, `geminiModel`, `geminiFallbackModel`.
 `rootUrl` can only be set in user settings and must be https; your saved sign-in is only ever sent to the grader you signed in to.
 
 ## Layout

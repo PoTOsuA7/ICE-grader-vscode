@@ -164,15 +164,56 @@ test('a non-PDF statement opens beside the code once, without taking focus each 
   assert.deepStrictEqual(opens[0][2], { viewColumn: h.vscode.ViewColumn.Beside, preserveFocus: true, preview: true });
 });
 
-test('turning "Hide exam problems" off shows exams straight away', async () => {
+test('exam problems are always listed, even with the old "hideExams" setting still in settings.json', async () => {
   const problems = [
     { id: '1', code: '05_List_15', name: 'a', hasTestcases: true },
     { id: '2', code: 'Exam_01', name: 'Exam 1', hasTestcases: true },
   ];
-  const h = loadExtension({ secrets: SIGNED_IN, problems });
+  const h = loadExtension({ secrets: SIGNED_IN, problems, config: { hideExams: true } });
   await settle(h);
-  assert.deepStrictEqual(h.log.tree.getChildren().map((g) => g.label), ['05_List']);
-  h.config.hideExams = false;
-  h.fireConfig('nattee.hideExams');
-  assert.deepStrictEqual(h.log.tree.getChildren().map((g) => g.label).sort(), ['05_List', 'Exam_01']);
+  assert.deepStrictEqual(h.log.tree.getChildren().map((g) => g.label), ['05_List', 'Exam1']);
+  assert.ok(!('nattee.hideExams' in pkg.contributes.configuration.properties));
+});
+
+// As listed on the grader: exam practice with tests, and older exam practice with only a statement.
+const EXAM_PROBLEMS = [
+  { id: '1', code: '05_List_15', name: '05_List_15_Foo', hasTestcases: true, status: 'solved', score: 100 },
+  { id: '1498', code: '2025s1_Exam2_A1-1_Student', name: '2025s1_Exam2_A1-1_Student', hasTestcases: true, status: 'untried', score: 0 },
+  { id: '1500', code: '2025s1_Exam2_A2-1_Student', name: '2025s1_Exam2_A2-1_Student', hasTestcases: true, status: 'inprogress', score: 40 },
+  { id: '1369', code: 'Exam1-2024_Q1A_student', name: 'Exam1-2024_Q1A_student', hasTestcases: false, status: 'untried', score: 0 },
+  { id: '1370', code: 'Exam1-2024_Q2A_student', name: 'Exam1-2024_Q2A_student', hasTestcases: false, status: 'untried', score: 0 },
+];
+
+test('exam practice problems are listed by default, grouped by exam, including those without test cases', async () => {
+  const h = loadExtension({ secrets: SIGNED_IN, problems: EXAM_PROBLEMS });
+  await settle(h);
+  const groups = h.log.tree.getChildren();
+  assert.deepStrictEqual(groups.map((g) => [g.label, g.description]),
+    [['05_List', '1/1 solved'], ['Exam1', '0/2 solved'], ['Exam2', '0/2 solved']]);
+  const exam1 = h.log.tree.getChildren(groups[1]);
+  assert.deepStrictEqual(exam1.map((i) => [i.label, i.description]),
+    [['Exam1-2024_Q1A_student', 'no tests'], ['Exam1-2024_Q2A_student', 'no tests']]);
+  const exam2 = h.log.tree.getChildren(groups[2]);
+  assert.deepStrictEqual(exam2.map((i) => i.description), ['', '40'], 'the name repeats the code, so it is not shown twice');
+});
+
+test('a problem without test cases: no test download, no automatic runs, a clear message, own input still works', async () => {
+  const h = loadExtension({ secrets: SIGNED_IN, problems: EXAM_PROBLEMS, warnAnswer: undefined });
+  await settle(h);
+  const doc = h.makeDoc(path.join('C:', 'ws', 'Exam1', 'Exam1-2024_Q1A_student.py'), 'print(1)');
+  h.setEditor(doc);
+  await settle(h);
+  assert.strictEqual(h.context['nattee.activeFileLinked'], true, 'linked by its name, so Submit is there');
+  assert.strictEqual(h.log.statusItem.command, 'nattee.runOneTest');
+  doc.edit('print(2)');
+  await doc.save();
+  await settle(h);
+  assert.deepStrictEqual(h.log.runs, [], 'nothing to run on save');
+  await h.commands['nattee.runTests']();
+  assert.match(h.log.infos.at(-1), /no test cases on the grader/);
+  await h.commands['nattee.submit']();
+  assert.match(h.log.warnings[0].o.detail, /no test cases to run locally/);
+  assert.deepStrictEqual(h.log.submitted, [], 'not confirmed, so nothing sent');
+  assert.deepStrictEqual(h.log.fetchedTests, []);
+  assert.deepStrictEqual(h.log.errors, []);
 });

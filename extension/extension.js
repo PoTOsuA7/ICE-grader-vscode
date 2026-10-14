@@ -9,7 +9,6 @@ const { statementHtml } = require('./lib/statement');
 const { explainFailures, MAX_FAILURES } = require('./lib/aiExplain');
 const { safeName, chapterOf, solutionPath } = require('./lib/layout');
 
-const EXAM = /(?<![a-z])exam(?![a-z])/i;
 const cfg = () => vscode.workspace.getConfiguration('nattee');
 
 function activate(context) {
@@ -85,17 +84,17 @@ function activate(context) {
     try { problems = JSON.parse(fs.readFileSync(cachedProblemsFile(), 'utf8')); } catch { problems = []; }
   }
 
-  // All problems with tests are kept (so linking still works); hideExams only filters what is listed.
+  // Every problem is listed, exam practice too, also those without test cases (statement + submit only).
   async function refreshProblems() {
-    const list = await withClient((c) => c.listProblems());
-    problems = list.filter((p) => p.hasTestcases);
+    problems = await withClient((c) => c.listProblems());
     fs.mkdirSync(cacheRoot(), { recursive: true });
     fs.writeFileSync(cachedProblemsFile(), JSON.stringify(problems));
     tree.fire();
     updateEditorState(); // the open file may only now match a problem
   }
 
-  const visibleProblems = () => problems.filter((p) => !(cfg().get('hideExams') && (EXAM.test(p.code) || EXAM.test(p.name))));
+  // false only when the grader says so; problems cached by older versions all had tests
+  const hasTests = (p) => p.hasTestcases !== false;
 
   const groupOf = (p) => chapterOf(p.code);
 
@@ -105,10 +104,9 @@ function activate(context) {
     getTreeItem(el) { return el; }
     getChildren(el) {
       if (!el) {
-        const shown = visibleProblems();
-        const groups = [...new Set(shown.map(groupOf))].sort();
+        const groups = [...new Set(problems.map(groupOf))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })); // Exam2 before Exam10
         return groups.map((g) => {
-          const inGroup = shown.filter((p) => groupOf(p) === g);
+          const inGroup = problems.filter((p) => groupOf(p) === g);
           const item = new vscode.TreeItem(g, vscode.TreeItemCollapsibleState.Collapsed);
           item.groupKey = g;
           item.description = `${inGroup.filter((p) => p.status === 'solved').length}/${inGroup.length} solved`;
@@ -116,11 +114,14 @@ function activate(context) {
           return item;
         });
       }
-      return visibleProblems().filter((p) => groupOf(p) === el.groupKey).sort((a, b) => a.code.localeCompare(b.code)).map((p) => {
+      return problems.filter((p) => groupOf(p) === el.groupKey).sort((a, b) => a.code.localeCompare(b.code)).map((p) => {
         const item = new vscode.TreeItem(p.code, vscode.TreeItemCollapsibleState.None);
-        const title = p.name.replace(/^\d+_[A-Za-z]+_/, '').replace(/_/g, ' ');
-        item.description = p.status === 'inprogress' ? `${title} · ${p.score}` : title;
-        item.tooltip = `${p.code}\n${p.name}\n${p.status || 'untried'}${p.status && p.status !== 'untried' ? ` (best score ${p.score})` : ''}`;
+        // Exam problems' names repeat the code: then show only what adds something.
+        const title = p.name === p.code ? '' : p.name.replace(/^\d+_[A-Za-z]+_/, '').replace(/_/g, ' ');
+        item.description = [title, !hasTests(p) && 'no tests', p.status === 'inprogress' && p.score]
+          .filter((x) => x || x === 0).join(' · ');
+        item.tooltip = `${p.code}\n${p.name}\n${p.status || 'untried'}${p.status && p.status !== 'untried' ? ` (best score ${p.score})` : ''}`
+          + (hasTests(p) ? '' : '\nNo test cases on the grader: try your own input (Run One Test) or submit to check it.');
         item.contextValue = 'problem';
         item.problem = p;
         item.iconPath = p.status === 'solved' ? new vscode.ThemeIcon('pass-filled', new vscode.ThemeColor('testing.iconPassed'))
@@ -147,6 +148,7 @@ function activate(context) {
   }
 
   async function getTests(p) {
+    if (!hasTests(p)) return [];
     // v2: read from the test case page, with data files. Older tests.json caches (which could hold a grader
     // web page instead of the test) are simply ignored.
     const file = path.join(problemDir(p.id), 'tests.v2.json');
@@ -211,7 +213,12 @@ function activate(context) {
     const ed = vscode.window.activeTextEditor;
     const p = ed && ed.document.uri.scheme === 'file' ? linkedProblem(ed.document.fileName) : null;
     vscode.commands.executeCommand('setContext', 'nattee.activeFileLinked', !!p);
-    if (p) { status.text = `$(play) Run ${p.code}`; status.show(); } else status.hide();
+    if (p) {
+      // Without grader tests the status bar runs your own input instead.
+      status.text = hasTests(p) ? `$(play) Run ${p.code}` : `$(play) Try ${p.code} (no tests)`;
+      status.command = hasTests(p) ? 'nattee.runTests' : 'nattee.runOneTest';
+      status.show();
+    } else status.hide();
     updateFailureContext();
     return p;
   }
@@ -219,7 +226,7 @@ function activate(context) {
   async function pickProblem() {
     if (!problems.length) await refreshProblems();
     const pick = await vscode.window.showQuickPick(
-      visibleProblems().map((p) => ({ label: p.code, description: p.name, p })), { placeHolder: 'Choose a problem', matchOnDescription: true });
+      problems.map((p) => ({ label: p.code, description: p.name, p })), { placeHolder: 'Choose a problem', matchOnDescription: true });
     return pick && pick.p;
   }
 
@@ -295,7 +302,6 @@ function activate(context) {
   });
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('nattee.hideExams')) tree.fire();
     if (!e.affectsConfiguration('nattee.rootUrl')) return;
     client = null; loadCachedProblems(); tree.fire(); updateEditorState();
     // Sign in again automatically only on the grader the saved password belongs to.
@@ -406,6 +412,10 @@ function activate(context) {
       await setLink(ed.document.fileName, p.id);
       updateEditorState();
     }
+    if (!hasTests(p)) {
+      if (!auto) vscode.window.showInformationMessage(`${p.code} has no test cases on the grader. Use Run One Test with your own input, or submit to check it.`);
+      return;
+    }
     await saveQuietly(ed.document);
     const source = ed.document.getText(); // the code being tested, before any edits made while it runs
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Running ${p.code}...` }, async () => {
@@ -479,7 +489,8 @@ function activate(context) {
     if (!source.trim()) throw new Error('The file is empty.');
     await refreshProblems(); // also makes sure the session is still valid before we send anything
     const local = lastRunFor(ed.document.fileName, p);
-    const localNote = !local || local.source !== source ? 'Local tests have not been run on this version.'
+    const localNote = !hasTests(p) ? 'This problem has no test cases to run locally.'
+      : !local || local.source !== source ? 'Local tests have not been run on this version.'
       : `Local tests: ${tally(local.results).text}.`;
     const choice = await vscode.window.showWarningMessage(
       `Submit ${path.basename(ed.document.fileName)} to the grader for ${p.code}?`,
