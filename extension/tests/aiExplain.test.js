@@ -60,7 +60,8 @@ test('sends the prompt with low thinking and returns the text, skipping thought 
   try {
     assert.deepStrictEqual(await run(), { text: 'You printed the wrong thing.', model: 'gemini-3.8-flash', fallback: false });
     assert.ok(f.sent[0].contents[0].parts[0].text.includes('print(1+1)'));
-    assert.ok(f.sent[0].systemInstruction.parts[0].text.includes('Do not rewrite the program'));
+    assert.ok(f.sent[0].systemInstruction.parts[0].text.includes('Do not write any code'));
+    assert.doesNotMatch(f.sent[0].systemInstruction.parts[0].text, /snippet[^.]*is fine/);
     assert.strictEqual(f.sent[0].generationConfig.thinkingConfig.thinkingLevel, 'low');
   } finally { f.restore(); }
 });
@@ -159,3 +160,15 @@ test('a cut-off expected output does not produce a made-up "first difference"', 
   assert.match(wrong, /First difference from expected: line 1/);
 });
 
+
+test('code the AI writes anyway is removed from the answer; inline names stay', async () => {
+  const reply = 'Line 3 uses `range(n)` so the last item is missed.\n\n```python\nfor i in range(n + 1):\n    total += a[i]\n```\n\nCheck the loop bound.\n```\nprint(total)';
+  const f = fakeGemini(ok(reply));
+  try {
+    const { text } = await run();
+    assert.doesNotMatch(text, /total \+= a\[i\]|print\(total\)|```/);
+    assert.match(text, /`range\(n\)`/);
+    assert.match(text, /Check the loop bound\./);
+    assert.match(text, /Code removed/);
+  } finally { f.restore(); }
+});

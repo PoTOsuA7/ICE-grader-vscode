@@ -31,8 +31,18 @@ test('Python 2 is not accepted; the next candidate is tried', async () => {
 
 test('a Python setting that cannot even be started falls back instead of crashing', async () => {
   const { runner } = fakeExecFile({ python3: () => [null, 'Python 3.11.2', ''] });
-  assert.strictEqual(await runner.findPython(''), 'python3');
-  await assert.rejects(() => fakeExecFile({}).runner.findPython('python'), /Python 3 not found \(tried "python", "py", "python3"\)/);
+  assert.strictEqual(await runner.findPython('', []), 'python3');
+  await assert.rejects(() => fakeExecFile({}).runner.findPython('python', []), /Python 3 not found \(tried "python", "py", "python3"\)/);
+});
+
+test('on a laptop with only Thonny, Thonny\'s own Python is used', async () => {
+  const thonny = 'C:\\Users\\s\\AppData\\Local\\Programs\\Thonny\\python.exe';
+  const { calls, runner } = fakeExecFile({
+    python: () => [Object.assign(new Error('Microsoft Store stub'), { code: 9009 }), '', ''],
+    [thonny]: () => [null, 'Python 3.13.2', ''],
+  });
+  assert.strictEqual(await runner.findPython('python', [thonny]), thonny);
+  assert.deepStrictEqual(calls.map((c) => c[0]), ['python', 'py', 'python3', thonny], 'only after the usual commands');
 });
 
 test('C is linked with -lm (after the source), C++ is compiled as C++17', async () => {

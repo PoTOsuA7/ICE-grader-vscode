@@ -1,7 +1,26 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseProblemList, parseSubmissionPage, parseSubmitForm, GraderClient } = require('../lib/client');
+const { parseProblemList, parseSubmissionPage, parseSubmissionSource, parseSubmitForm, GraderClient } = require('../lib/client');
+
+test('the code of a submission is read from its page exactly as submitted, with its language', () => {
+  const html = `<h2>Submission: #9</h2>
+<div data-controller='editor'>
+<textarea data-editor-target='source' id='text_sourcecode' style='display:none'>if a &lt; b and s == &quot;x&quot;:
+    print(&#39;&amp;&#39;)
+</textarea>
+<div class='row mb-2'>
+<div class='col-4 text-end text-secondary'>
+Language
+</div>
+<div class='col'>
+Python
+</div>
+</div>`;
+  assert.deepStrictEqual(parseSubmissionSource(html), { source: 'if a < b and s == "x":\n    print(\'&\')\n', language: 'Python' });
+  assert.strictEqual(parseSubmissionSource(html.replace("style='display:none'>", "style='display:none'>\n")).source.startsWith('if a'), true);
+  assert.strictEqual(parseSubmissionSource('<form action="/login/login"><input name="password"></form>'), null);
+});
 
 // Synthetic pages that follow the structure of the real grader's HTML.
 const row = (id, code, status, score, sub) => `<tr>

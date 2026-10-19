@@ -1,77 +1,52 @@
 # ICE Nattee Grader for VS Code
 
-Everything from the NatteeGrader website inside VS Code, so you never alt-tab:
+The NatteeGrader website inside VS Code: read the problems, test your code and submit without leaving the editor.
 
-- **Sidebar** listing every problem by chapter, with your progress from the grader: a tick for solved,
-  a filled dot for in progress (with your best score), and `solved/total` per chapter. Exam practice problems are
-  grouped as Exam1, Exam2, ...; those without test cases on the grader are marked "no tests" (try your own input
-  with Run One Test, or submit).
-- **Statement viewer**: click a problem to read its PDF beside your code. Switching to a linked solution file
-  re-opens its statement automatically.
-- **Auto-link**: a file named after a problem code (e.g. `05_List_15.py`) links itself, no setup.
-- **Run tests** (▶ in the editor title bar or status bar, or automatically on save) for `.py`, `.cpp`, `.c` files,
-  with PASS / FAIL / TLE / RE per case. For a wrong answer it points at the **first difference** (line and column)
-  and makes spaces visible, so mistakes like `Hello  Python.` vs `Hello Python.` are obvious.
-- **Run one test or your own input**: `Nattee: Run One Test or Custom Input` (type it, or use the clipboard).
-- **Submit to the grader** without leaving VS Code (`Nattee: Submit to Grader`, the cloud button). It always asks
-  for confirmation first, never submits on save, then shows the grader's points and per-test verdicts live.
-- **Test Results** panel in the sidebar keeps results visible next to the statement.
-- **Explain a failure with AI** (`Nattee: Explain Test Failure (AI)`, the ✨ button): sends your code and the
-  failing tests (up to 3 at once) to Google's Gemini, using **your own Gemini API key**, and shows why it fails. It's told to explain
-  the bug, not to hand back corrected code - the point is to help you fix it yourself, not to do the assignment
-  for you. **Check your course's policy on AI assistance before using this.**
-  - Get a free key at [aistudio.google.com](https://aistudio.google.com) → Get API key, then run
-    `Nattee: Set Gemini API Key`. A Gemini app subscription (e.g. Google AI Pro) is separate from the API and
-    isn't needed. School Google accounts may have AI Studio switched off; a personal Google account works.
-  - On the free tier Google may use what you send to improve its products. Nothing is sent until you run
-    the command. The model is set by `nattee.geminiModel` (default `gemini-3.8-flash`). If Google says it's
-    overloaded, the extension retries twice and then asks `nattee.geminiFallbackModel` (default `gemini-3.5-flash`).
-- Test cases are read from the grader's test case page and cached locally. The grader shows only the first 2 KB
-  of each file: a test whose input is longer shows as SKIP (submit to check it), and a longer expected output is
-  checked on the part that's shown (SKIP if too little of it is shown to compare). Credentials (grader and Gemini key) are
-  kept in VS Code's secret storage, not a temp file.
+## Features
+- **Problem list** in the sidebar by chapter, with your progress: solved, in progress (with your best score) and
+  `solved/total` per chapter. Exam practice problems are grouped as Exam1, Exam2, ...
+- **Statements** open beside your code, with Copy and Save buttons.
+- **Run tests** with ▶ or on save: PASS / FAIL / TLE / RE for each case, and a wrong answer shows the first
+  difference.
+- **Run one test or your own input** (`Nattee: Run One Test or Custom Input`).
+- **Run in Terminal**: type the input yourself, like in Thonny.
+- **Mock exam** (the stopwatch button): random problems and a timer. No tests, AI or submit until you hand in, then
+  your answers are marked with the grader's tests.
+- **Submit** (the cloud button): always asks first, then shows the grader's result live.
+- **Works offline**: press **Download All for Offline** while the grader site is up, then everything except Submit
+  works without it.
+- **Download all statements and your solutions** (`Nattee: Download All Statements and My Solutions`).
+- **Explain a failure with AI** (✨): Google's Gemini explains why a test fails, in words, without writing code.
+  Uses your own free API key from [aistudio.google.com](https://aistudio.google.com)
+  (`Nattee: Set Gemini API Key`). Check your course's rules on AI first.
 
-## Install
-In VS Code open Extensions (`Ctrl+Shift+X`), search **ICE Nattee Grader** and click Install. Needs VS Code 1.90+.
-Cursor, Windsurf and VSCodium get it the same way, from [Open VSX](https://open-vsx.org/extension/potosua7/nattee-grader).
+## Get started
+1. Install **ICE Nattee Grader** from Extensions (`Ctrl+Shift+X`). For Cursor, Windsurf and VSCodium it's on
+   [Open VSX](https://open-vsx.org/extension/potosua7/nattee-grader).
+2. Click the **ICE Nattee Grader** icon in the activity bar and **Sign in**.
+3. Click the new-file button on a problem. It makes `05_List/05_List_15.py` (for example) and opens the statement.
+   Any file named after a problem code is linked to it.
+4. Click ▶ or save the file to run the tests.
 
-Or download `nattee-grader.vsix` from [Releases](https://github.com/PoTOsuA7/ICE-grader-vscode/releases) and run
-`code --install-extension nattee-grader.vsix`. To build it yourself: `python tools/build_vsix.py`.
+Needs VS Code 1.90+ and Python 3 (Thonny's Python works), or `g++`/`gcc` for C/C++.
 
-## Use
-1. Open the **ICE Nattee Grader** icon in the activity bar → **Sign in**.
-2. Right-click a problem → **Create Solution File**. It creates `<chapter>/<code>.py` in your workspace
-   (e.g. `05_List/05_List_15.py`), links it and shows the statement. If a file with that name already exists
-   anywhere in the workspace it opens that one instead. Set `nattee.organizeByChapter` to `false` to keep files flat.
-   Or open any file and run **Nattee: Link Current File to Problem**.
-3. Click ▶ to run the tests, or just save the file: tests run automatically on save (`nattee.runOnSave`).
-
-Settings (`nattee.*`): `rootUrl`, `defaultExtension`, `organizeByChapter`, `pythonPath`, `cppCompiler`, `cCompiler`, `timeLimitSeconds`, `runOnSave`, `geminiModel`, `geminiFallbackModel`.
-`rootUrl` can only be set in user settings and must be https; your saved sign-in is only ever sent to the grader you signed in to.
-
-## Layout
-- `extension/` — the VS Code extension (plain JS, no build step). `lib/client.js` talks to the grader,
-  `lib/runner.js` runs solutions, `lib/statement.js` is the PDF viewer.
-- `tools/build_vsix.py` — packages the extension into a `.vsix`.
-
-## Platforms
-Written to be cross-platform (Windows, macOS, Linux). The automated tests run on all three in CI
-(`.github/workflows/test.yml`), and it has been used by hand on Windows 11 only. Requires VS Code 1.90+ and
-Python 3 (or `g++`/`gcc` for C/C++ solutions). On macOS the Python command is usually `python3`; the extension
-finds it automatically.
+## Good to know
+- The grader shows only the first 2 KB of each test. A test with a longer input shows as SKIP: submit to check it.
+- Your password and Gemini key are kept in VS Code's secret storage, and your sign-in is only sent to the grader.
+- On Gemini's free tier Google may use what you send to improve its products. Nothing is sent until you ask.
+- Settings: search `nattee` in Settings (Python path, compiler, time limit, run on save, ...).
 
 ## Development
 ```
 cd extension
-node --test          # unit tests, no VS Code needed
+node --test
 python ../tools/build_vsix.py
-python ../tools/publish_openvsx.py      # Open VSX upload; token from OVSX_PAT or ~/.ovsx_token
-python ../tools/publish_marketplace.py  # VS Code Marketplace update; token from VSCE_PAT or ~/.vsce_token
 ```
-Or upload by hand at marketplace.visualstudio.com/manage (Update → the `.vsix`).
+Each release's `.vsix` is on [Releases](https://github.com/PoTOsuA7/ICE-grader-vscode/releases)
+(`code --install-extension nattee-grader.vsix`).
 
 ## License
 MIT. Bundles pdf.js (Apache-2.0), see `THIRD_PARTY_NOTICES.md`.
 
-This is an unofficial student tool. It only reads what your own grader account can already see, and
-stores it on your machine. Check your course's rules before using it.
+Unofficial student tool. It only reads what your own grader account can see and keeps it on your computer.
+Check your course's rules before using it.

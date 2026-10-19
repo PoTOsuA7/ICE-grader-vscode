@@ -14,9 +14,19 @@ solution. You will see their source code and the test cases it fails. Explain WH
 likely bug, wrong assumption, or edge case missed, pointing at the specific lines involved. If
 several tests fail for the same reason, say so once instead of repeating yourself.
 
-Do not rewrite the program and do not give a corrected or complete version of the code - the
-student must fix it themselves. A short illustrative snippet (a couple of lines, not a drop-in
-replacement) is fine if it helps explain a concept. Keep the whole answer under ~250 words.`;
+Do not write any code: no corrected lines, no snippets, no rewritten program. The student must
+fix it themselves. Refer to their code by line number or by quoting a short expression inline,
+and describe the change in words. Keep the whole answer under ~250 words.`;
+
+const CODE_REMOVED = '(Code removed: the explanation should help you find the fix, not write it.)';
+
+// The prompt asks for no code; this makes sure of it. Code blocks are removed; inline `names` stay.
+function withoutCode(text) {
+  return text
+    .replace(/```[\s\S]*?(```|$)/g, CODE_REMOVED) // also an unclosed block at the end
+    .replace(new RegExp(`(${CODE_REMOVED.replace(/[.()]/g, '\\$&')}\\s*)+`, 'g'), `${CODE_REMOVED}\n\n`)
+    .trim();
+}
 
 const clip = (s) => (s.length > MAX_FIELD ? s.slice(0, MAX_FIELD) + '\n... (truncated)' : s);
 
@@ -130,7 +140,7 @@ async function callGemini(apiKey, models, prompt, { retryDelays = RETRY_DELAYS_M
   const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
   const text = parts.filter((p) => typeof p.text === 'string' && !p.thought).map((p) => p.text).join('').trim();
   if (!text) throw new Error('Gemini returned no explanation.');
-  return { text, model, fallback: model !== tried[0] };
+  return { text: withoutCode(text), model, fallback: model !== tried[0] };
 }
 
 // -> { text, model, fallback } where model is the one that actually answered, and fallback says whether the
@@ -139,4 +149,4 @@ async function explainFailures(apiKey, models, context, opts) {
   return callGemini(apiKey, Array.isArray(models) ? models : [models], buildPrompt(context), opts);
 }
 
-module.exports = { explainFailures, buildPrompt, MAX_FAILURES };
+module.exports = { explainFailures, buildPrompt, withoutCode, MAX_FAILURES };

@@ -26,15 +26,30 @@ function execP(cmd, args, opts) {
   });
 }
 
-// The Windows "python" command is often a Microsoft Store stub; fall back to the "py" launcher.
+// Thonny (the course's IDE) comes with its own Python, and a laptop with only Thonny has no other.
+function thonnyPythons() {
+  const env = process.env;
+  const home = os.homedir();
+  const mac = 'Thonny.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3';
+  const places = process.platform === 'win32'
+    ? [env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Programs', 'Thonny', 'python.exe'),
+      env.ProgramFiles && path.join(env.ProgramFiles, 'Thonny', 'python.exe'),
+      env['ProgramFiles(x86)'] && path.join(env['ProgramFiles(x86)'], 'Thonny', 'python.exe')]
+    : process.platform === 'darwin'
+      ? [path.join('/Applications', mac), path.join(home, 'Applications', mac)]
+      : [path.join(home, 'apps', 'thonny', 'bin', 'python3')];
+  return places.filter((p) => p && fs.existsSync(p));
+}
+
+// The Windows "python" command is often a Microsoft Store stub; fall back to the "py" launcher, then Thonny's Python.
 // Only Python 3 counts: the grader runs Python 3, and under Python 2 input() and print behave differently.
-async function findPython(preferred) {
-  const tried = [...new Set([preferred, 'py', 'python3'].filter(Boolean))];
+async function findPython(preferred, extras = thonnyPythons()) {
+  const tried = [...new Set([preferred, 'py', 'python3', ...extras].filter(Boolean))];
   for (const c of tried) {
     const r = await execP(c, ['--version'], { timeout: 10000 });
     if (!r.err && /Python 3\./.test(r.stdout + r.stderr)) return c;
   }
-  throw new Error(`Python 3 not found (tried ${tried.map((c) => `"${c}"`).join(', ')}). Install Python 3 or set nattee.pythonPath.`);
+  throw new Error(`Python 3 not found (tried ${tried.map((c) => `"${c}"`).join(', ')}). Install Python 3 (or Thonny) or set nattee.pythonPath.`);
 }
 
 // -> { cmd, args, cleanup } or throws Error with a user-facing message
@@ -173,6 +188,16 @@ async function runTests(file, cases, cfg) {
   }
 }
 
+// What to start in a VS Code terminal so the student types the input themselves: { cmd, args, cleanup }.
+// A terminal wants a real path, so for Python the interpreter's own path is used instead of "py"/"python".
+async function terminalCommand(file, cfg) {
+  const prep = await prepare(file, cfg);
+  if (path.extname(file).toLowerCase() !== '.py') return prep;
+  const r = await execP(prep.cmd, ['-c', 'import sys; print(sys.executable)'], { timeout: 10000 });
+  const exe = !r.err && String(r.stdout).trim();
+  return { ...prep, cmd: exe || prep.cmd };
+}
+
 // Run once with arbitrary input (no expected output), with the problem's data files if it has any.
 // -> { verdict: 'OK'|'TLE'|'RE', ms, stdout, stderr }
 async function runSingle(file, input, cfg, files) {
@@ -190,4 +215,4 @@ async function runSingle(file, input, cfg, files) {
   }
 }
 
-module.exports = { runTests, runSingle, normalize, mapDataPaths, findPython, prepare }; // findPython and prepare: for tests
+module.exports = { runTests, runSingle, terminalCommand, dataSandbox, killTree, normalize, mapDataPaths, findPython, prepare }; // findPython and prepare: for tests

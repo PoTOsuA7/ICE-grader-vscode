@@ -55,10 +55,19 @@ function parseSubmissionPage(html) {
     points: pts ? parseFloat(pts[1]) : null,
     max: pts ? parseFloat(pts[2]) : null,
     status,
+    // false when the page has no "Grading Task Status" row at all: not a submission page any more, or a new layout
+    readable: /\nGrading Task Status\n<\/div>/.test(html),
     done: /done/.test(status),
     runtime: fieldAfter(html, 'Runtime'),
     tests,
   };
+}
+
+// submissions/ID -> { source, language } (the code as it was submitted), or null if the page has no code
+function parseSubmissionSource(html) {
+  const m = /<textarea[^>]*id=['"]text_sourcecode['"][^>]*>([\s\S]*?)<\/textarea>/.exec(html);
+  // like a browser: a newline straight after <textarea> is not part of the text
+  return m ? { source: decodeEntities(m[1]).replace(/^\r?\n/, ''), language: fieldAfter(html, 'Language') } : null;
 }
 
 // direct_edit_problem/ID -> { token, problemId, languages: [{id, name}] }
@@ -216,16 +225,8 @@ class GraderClient {
     return { data: Buffer.from(await res.arrayBuffer()), ext: ext.toLowerCase() };
   }
 
-  // A test file via its download link, or null when the grader doesn't allow downloads
-  // (it then redirects to a normal page instead of sending the file).
-  async _download(id, kind) {
-    const res = await this._request(new URL(`testcases/${id}/${kind}`, this.root).href);
-    if (!res.ok || /text\/html/i.test(res.headers.get('content-type') || '')) return null;
-    return res.text();
-  }
-
-  // -> [{input, output, partialInput?, partialOutput?, files?}]. Read from the test case page; a file cut off
-  // there is downloaded in full when the grader allows it, otherwise kept as the visible part and flagged partial.
+  // -> [{input, output, partialInput?, partialOutput?, files?}]. Read from the test case page only: the instructors
+  // turned test downloads off, so a file cut off there is kept as the visible part and flagged partial.
   // `files` are the problem's data files ({name: text}), which the program may open while it runs.
   async fetchTestcases(problemId) {
     const html = await this._getText(`testcases/show_problem/${problemId}`);
@@ -233,18 +234,14 @@ class GraderClient {
     if (!page.length) throw new Error('No test cases visible for this problem (not published, session expired, or the page layout changed)');
     const data = parseDataFiles(html);
     const files = data.length ? Object.fromEntries(data.map((f) => [f.name, f.text])) : null;
-    const dataCut = data.some((f) => f.cut); // can't download data files, so a cut one makes the run unreliable
-    const cases = [];
-    for (const tc of page) {
-      const input = tc.inputCut ? await this._download(tc.id, 'download_input') : tc.input;
-      const output = tc.outputCut ? await this._download(tc.id, 'download_sol') : tc.output;
-      const c = { input: input ?? tc.input, output: output ?? tc.output };
-      if (input === null || dataCut) c.partialInput = true;
-      if (output === null) c.partialOutput = true;
+    const dataCut = data.some((f) => f.cut); // a cut data file makes every run unreliable
+    return page.map((tc) => {
+      const c = { input: tc.input, output: tc.output };
+      if (tc.inputCut || dataCut) c.partialInput = true;
+      if (tc.outputCut) c.partialOutput = true;
       if (files) c.files = files;
-      cases.push(c);
-    }
-    return cases;
+      return c;
+    });
   }
 }
 
@@ -284,7 +281,13 @@ GraderClient.prototype.submit = async function submit(problemId, source, ext) {
 GraderClient.prototype.waitForGrade = async function waitForGrade(submissionId, { timeoutMs = 90000, intervalMs = 1500, onUpdate } = {}) {
   const start = Date.now();
   for (;;) {
-    const r = parseSubmissionPage(await this._getText(`submissions/${submissionId}`));
+    const html = await this._getText(`submissions/${submissionId}`);
+    const r = parseSubmissionPage(html);
+    // Say so at once instead of showing "grading..." for 90 s on a page that can't be read.
+    if (!r.readable) {
+      if (isLoginPage(html)) throw new Error(`Session expired while waiting for submission #${submissionId} to be graded - check it on the grader site.`);
+      throw new Error(`Could not read the grading status of submission #${submissionId} (the grader's page has changed) - check it on the grader site.`);
+    }
     if (onUpdate) onUpdate(r);
     if (r.done) return { ...r, timedOut: false };
     if (Date.now() - start > timeoutMs) return { ...r, timedOut: true };
@@ -292,4 +295,15 @@ GraderClient.prototype.waitForGrade = async function waitForGrade(submissionId, 
   }
 };
 
-module.exports = { GraderClient, decodeEntities, parseProblemList, parseSubmissionPage, parseSubmitForm, parseTestcasePage, parseDataFiles };
+// Your code for a submission, as you submitted it. -> { source, language }
+GraderClient.prototype.fetchSubmissionSource = async function fetchSubmissionSource(submissionId) {
+  const html = await this._getText(`submissions/${submissionId}`);
+  const r = parseSubmissionSource(html);
+  if (r) return r;
+  if (isLoginPage(html)) throw new Error('Session expired while downloading your code');
+  throw new Error(`Could not read the code of submission #${submissionId} (the grader's page has changed)`);
+};
+
+module.exports = {
+  GraderClient, decodeEntities, parseProblemList, parseSubmissionPage, parseSubmissionSource, parseSubmitForm, parseTestcasePage, parseDataFiles,
+};

@@ -141,3 +141,23 @@ test('a .c file is matched to a language listed as "ANSI C"', async () => {
     assert.strictEqual(posted.language_id, '2');
   } finally { srv.restore(); }
 });
+
+// The submission page as the grader shows it (checked against a real one, 2026-10-17).
+const row = (label, value) => `<div class='row mb-2'>\n<div class='col-4 text-end text-secondary'>\n${label}\n</div>\n<div class='col'>\n${value}\n</div>\n</div>`;
+
+test('waiting for a grade: a page without the grading status fails at once instead of "still grading"', async () => {
+  let polls = 0;
+  const srv = fakeServer({
+    'GET /submissions/1': () => { polls++; return [200, html(row('Points', '100.0/100') + row('Grading Task Status', 'done'))]; },
+    'GET /submissions/2': () => { polls++; return [200, html('<h1>Submission</h1><p>a brand new layout</p>')]; },
+    'GET /submissions/3': () => { polls++; return [200, loginForm()]; },
+  });
+  try {
+    const g = await client().waitForGrade('1', { intervalMs: 1 });
+    assert.deepStrictEqual([g.done, g.points, g.timedOut], [true, 100, false]);
+    polls = 0;
+    await assert.rejects(() => client().waitForGrade('2', { intervalMs: 1 }), /Could not read the grading status of submission #2/);
+    assert.strictEqual(polls, 1, 'no 90 s of polling');
+    await assert.rejects(() => client().waitForGrade('3', { intervalMs: 1 }), /Session expired while waiting for submission #3/);
+  } finally { srv.restore(); }
+});

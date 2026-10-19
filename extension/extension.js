@@ -1,10 +1,14 @@
 'use strict';
 const vscode = require('vscode');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { GraderClient } = require('./lib/client');
-const { runTests, runSingle } = require('./lib/runner');
-const { localResultsHtml, singleResultHtml, submissionHtml, explanationHtml, emptyHtml } = require('./lib/resultsHtml');
+const { GraderClient, decodeEntities } = require('./lib/client');
+const { runTests, runSingle, terminalCommand, dataSandbox, killTree } = require('./lib/runner');
+const { programTerminal } = require('./lib/programTerminal');
+const { copyPngToClipboard } = require('./lib/clipboardImage');
+const { localResultsHtml, singleResultHtml, submissionHtml, explanationHtml, emptyHtml, mockReportHtml } = require('./lib/resultsHtml');
+const { pickProblems, clock, stamp, summarize } = require('./lib/mockExam');
 const { statementHtml } = require('./lib/statement');
 const { explainFailures, MAX_FAILURES } = require('./lib/aiExplain');
 const { safeName, chapterOf, solutionPath } = require('./lib/layout');
@@ -76,6 +80,13 @@ function activate(context) {
   }
 
   const fail = (e) => vscode.window.showErrorMessage(`Nattee: ${e.message}`);
+
+  // A running mock exam: { started, deadline, minutes, items: [{ id, code, file }] }, kept across restarts.
+  const mock = () => context.globalState.get('nattee.mock');
+  const inMock = () => !!mock();
+  const refuseInMock = (what) => {
+    if (inMock()) throw new Error(`Mock exam in progress: ${what} until you hand in. Use "Run in Terminal" to try your own input.`);
+  };
 
   // --------------------------------------------------------------- problems
   const cachedProblemsFile = () => path.join(cacheRoot(), 'problems.json');
@@ -204,8 +215,8 @@ function activate(context) {
     });
   };
   const setLink = (file, id) => {
-    const run = lastRun.get(file);
-    if (run && run.problemId !== id) lastRun.delete(file); // those results were for another problem
+    const run = lastRun.get(linkKey(file));
+    if (run && run.problemId !== id) lastRun.delete(linkKey(file)); // those results were for another problem
     return context.globalState.update('nattee.links', { ...links(), [linkKey(file)]: id });
   };
 
@@ -214,9 +225,9 @@ function activate(context) {
     const p = ed && ed.document.uri.scheme === 'file' ? linkedProblem(ed.document.fileName) : null;
     vscode.commands.executeCommand('setContext', 'nattee.activeFileLinked', !!p);
     if (p) {
-      // Without grader tests the status bar runs your own input instead.
-      status.text = hasTests(p) ? `$(play) Run ${p.code}` : `$(play) Try ${p.code} (no tests)`;
-      status.command = hasTests(p) ? 'nattee.runTests' : 'nattee.runOneTest';
+      // Without grader tests (none for this problem, or a mock exam is running) it runs your own input instead.
+      status.text = inMock() ? `$(terminal) Run ${p.code} in terminal` : hasTests(p) ? `$(play) Run ${p.code}` : `$(play) Try ${p.code} (no tests)`;
+      status.command = inMock() ? 'nattee.runInTerminal' : hasTests(p) ? 'nattee.runTests' : 'nattee.runOneTest';
       status.show();
     } else status.hide();
     updateFailureContext();
@@ -301,6 +312,167 @@ function activate(context) {
     vscode.window.showInformationMessage('Nattee: cache cleared, statements and test cases will be downloaded again.');
   });
 
+  // Runs fn on every problem, three at a time so the grader isn't flooded, with a progress bar that can be
+  // cancelled. -> { saved, failed: [codes], stopped }
+  async function eachProblem(title, list, fn) {
+    const queue = [...list];
+    const failed = [];
+    let done = 0;
+    let stopped = false;
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title, cancellable: true }, async (progress, token) => {
+      const worker = async () => {
+        while (queue.length) {
+          if (token.isCancellationRequested) { stopped = true; return; }
+          const p = queue.shift();
+          try { await fn(p); } catch { failed.push(p.code); }
+          done++;
+          progress.report({ message: `${done} of ${list.length}`, increment: 100 / list.length });
+        }
+      };
+      await Promise.all([1, 2, 3].map(worker));
+    });
+    return { saved: done - failed.length, failed, stopped };
+  }
+  const someOf = (codes) => codes.slice(0, 5).join(', ') + (codes.length > 5 ? ` and ${codes.length - 5} more` : '');
+
+  // Saves every problem's statement and tests, so all but Submit works while the grader site is down.
+  // Only what isn't saved yet is downloaded.
+  reg('nattee.downloadAll', async () => {
+    await refreshProblems();
+    const all = [...problems];
+    const r = await eachProblem('Nattee: saving problems for offline use', all, async (p) => { await getStatement(p); await getTests(p); });
+    if (r.stopped) {
+      vscode.window.showInformationMessage(`Nattee: stopped. ${r.saved} of ${all.length} problems saved - press Download All again for the rest.`);
+    } else if (r.failed.length) {
+      vscode.window.showWarningMessage(`Nattee: saved ${r.saved} of ${all.length} problems for offline use. Couldn't download ${someOf(r.failed)} - press Download All again to retry.`);
+    } else {
+      vscode.window.showInformationMessage(`Nattee: all ${all.length} problems saved. Everything except Submit now works without the grader site.`);
+    }
+  });
+
+  const downloadsDir = () => {
+    const d = path.join(os.homedir(), 'Downloads');
+    return fs.existsSync(d) ? d : os.homedir();
+  };
+  const languageExt = (lang) => (/python/i.test(lang) ? '.py' : /c\+\+|cpp/i.test(lang) ? '.cpp' : /^\s*c\s*$/i.test(lang) ? '.c' : '.txt');
+
+  // Every statement, and your latest submitted code for each problem, into one new folder. Command Palette only.
+  reg('nattee.exportAll', async () => {
+    await refreshProblems();
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFolders: true, canSelectFiles: false, canSelectMany: false, defaultUri: vscode.Uri.file(downloadsDir()),
+      openLabel: 'Save here', title: 'Nattee: where should the statements and your solutions go?',
+    });
+    if (!picked || !picked.length) return;
+    // a new folder each time, so nothing already there is overwritten
+    const day = stamp(new Date()).slice(0, 10);
+    let dir = path.join(picked[0].fsPath, EXPORT_PREFIX + day);
+    for (let n = 2; fs.existsSync(dir); n++) dir = path.join(picked[0].fsPath, `${EXPORT_PREFIX}${day}-${n}`);
+    const all = [...problems];
+    let solutions = 0;
+    const r = await eachProblem('Nattee: downloading all statements and your solutions', all, async (p) => {
+      const into = path.join(dir, safeName(groupOf(p)));
+      fs.mkdirSync(into, { recursive: true });
+      const statement = await getStatement(p);
+      fs.copyFileSync(statement, path.join(into, `${safeName(p.code)}${path.extname(statement)}`));
+      if (!p.lastSubmissionId) return; // never submitted
+      const { source, language } = await withClient((c) => c.fetchSubmissionSource(p.lastSubmissionId));
+      fs.writeFileSync(path.join(into, `${safeName(p.code)}${languageExt(language)}`), source);
+      solutions++;
+    });
+    const what = `${r.saved} of ${all.length} problems (${solutions} with your latest submitted code)`;
+    let answer;
+    if (r.stopped) answer = await vscode.window.showInformationMessage(`Nattee: stopped after ${what}. Folder: ${dir}`, 'Open Folder');
+    else if (r.failed.length) answer = await vscode.window.showWarningMessage(`Nattee: saved ${what}. Couldn't download ${someOf(r.failed)}. Folder: ${dir}`, 'Open Folder');
+    else answer = await vscode.window.showInformationMessage(`Nattee: saved all ${all.length} statements and ${solutions} solutions (your latest submission of each). Folder: ${dir}`, 'Open Folder');
+    if (answer === 'Open Folder') vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(dir));
+  });
+
+  // ------------------------------------------------------ statement buttons
+  // Asks the statement viewer, which has the PDF open in pdf.js: 'getText' -> { pages: [text of each page] },
+  // 'getImage' -> { png: data URL of every page as one picture }. The text is asked again every 2 s in case the
+  // viewer is still loading; the picture is only asked for once the text has come, so the viewer is ready.
+  let viewerRequests = 0;
+  function askViewer(type) {
+    const panel = statementPanel;
+    const id = ++viewerRequests;
+    const reply = type === 'getText' ? 'text' : 'image';
+    return new Promise((resolve, reject) => {
+      const ask = () => panel.webview.postMessage({ type, id });
+      const retry = type === 'getText' ? setInterval(ask, 2000) : null;
+      const giveUp = setTimeout(() => done(new Error("the statement viewer didn't answer - try again once the statement is showing")), 30000);
+      const sub = panel.webview.onDidReceiveMessage((m) => {
+        if (m && m.type === reply && m.id === id) done(m.error ? new Error(`couldn't read the statement (${m.error})`) : null, m);
+      });
+      function done(err, m) { clearInterval(retry); clearTimeout(giveUp); sub.dispose(); if (err) reject(err); else resolve(m); }
+      ask();
+    });
+  }
+  const tidy = (text) => text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  // a page with (almost) no text has its words drawn as shapes or a scan: only a picture of it has them
+  const drawnPage = (text) => text.replace(/\s/g, '').length < 20;
+
+  // Whose statement: the viewer's when it is the active tab (its title-bar buttons), else the current file's
+  // problem, else the one shown last.
+  function statementProblem() {
+    const shown = problems.find((p) => p.id === shownProblem);
+    if (shown && statementPanel && statementPanel.active) return shown;
+    const ed = vscode.window.activeTextEditor;
+    const p = (ed && ed.document.uri.scheme === 'file' && linkedProblem(ed.document.fileName)) || shown;
+    if (!p) throw new Error("Open a problem's statement first (click the problem in the sidebar).");
+    return p;
+  }
+
+  // Copies the statement to paste into a chat, an AI or notes: as text, or as a picture when part of it is drawn
+  // rather than written (some PDFs have their words as shapes, which have no text to copy).
+  reg('nattee.copyStatement', async () => {
+    refuseInMock('copying the statement is off');
+    const p = statementProblem();
+    const file = await getStatement(p);
+    if (path.extname(file).toLowerCase() !== '.pdf') {
+      let text = fs.readFileSync(file, 'utf8');
+      if (/\.html?$/i.test(file)) text = decodeEntities(text.replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, ' '));
+      await vscode.env.clipboard.writeText(`${p.code}\n\n${tidy(text)}\n`);
+      vscode.window.showInformationMessage(`Nattee: ${p.code}'s statement copied - paste it anywhere.`);
+      return;
+    }
+    await showStatement(p, true);
+    const { pages } = await askViewer('getText');
+    const text = tidy(pages.join('\n\n'));
+    if (!pages.some(drawnPage)) {
+      await vscode.env.clipboard.writeText(`${p.code}\n\n${text}\n`);
+      vscode.window.showInformationMessage(`Nattee: ${p.code}'s statement copied - paste it anywhere.`);
+      return;
+    }
+    try {
+      const { png } = await askViewer('getImage');
+      await copyPngToClipboard(Buffer.from(png.slice(png.indexOf(',') + 1), 'base64'));
+      // a picture of many pages has them small (apps shrink big pictures), the PDF has them sharp
+      const long = pages.length > 6 ? ` It's ${pages.length} pages, so they're small in it: if they can't be read, use Save Statement As... and attach the PDF.` : '';
+      vscode.window.showInformationMessage(`Nattee: ${p.code}'s statement copied as a picture (part of it isn't text) - paste it into a chat or an AI.${long}`);
+    } catch (e) {
+      if (text) await vscode.env.clipboard.writeText(`${p.code}\n\n${text}\n`);
+      vscode.window.showWarningMessage(`Nattee: part of ${p.code}'s statement isn't text and couldn't be copied as a picture (${e.message}). `
+        + `${text ? 'The rest was copied. ' : ''}Use Save Statement As... and attach the PDF instead.`);
+    }
+  });
+
+  // Saves a copy of the statement (the PDF) wherever you like, e.g. to attach it to a chat.
+  reg('nattee.saveStatement', async () => {
+    const p = statementProblem();
+    const file = await getStatement(p);
+    const ext = path.extname(file);
+    const target = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(downloadsDir(), `${safeName(p.code)}${ext}`)), saveLabel: 'Save statement',
+      filters: ext.toLowerCase() === '.pdf' ? { PDF: ['pdf'] } : undefined,
+    });
+    if (!target) return;
+    fs.copyFileSync(file, target.fsPath);
+    if (await vscode.window.showInformationMessage(`Nattee: saved ${path.basename(target.fsPath)}.`, 'Show in Folder') === 'Show in Folder') {
+      vscode.commands.executeCommand('revealFileInOS', target);
+    }
+  });
+
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (!e.affectsConfiguration('nattee.rootUrl')) return;
     client = null; loadCachedProblems(); tree.fire(); updateEditorState();
@@ -316,18 +488,27 @@ function activate(context) {
     if (p) await showStatement(p, false);
   });
 
-  reg('nattee.createSolution', async (item) => {
-    const p = item && item.problem ? item.problem : await pickProblem();
-    if (!p) return;
+  // The workspace folder new files go in: the active file's, else the first one.
+  function workspaceFolder() {
     const ed = vscode.window.activeTextEditor;
     const folder = (ed && vscode.workspace.getWorkspaceFolder(ed.document.uri))
       || (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0]);
-    if (!folder) throw new Error('Open a folder in VS Code first.');
-    let ext = cfg().get('defaultExtension');
-    if (!ext.startsWith('.')) ext = '.' + ext;
-    // Reuse a solution already in the workspace (any folder) rather than making a second copy.
+    if (!folder) throw new Error('Open a folder in VS Code first (File > Open Folder), for your solution files.');
+    return folder;
+  }
+  const solutionExt = () => { const ext = cfg().get('defaultExtension') || '.py'; return ext.startsWith('.') ? ext : '.' + ext; };
+  const MOCK_DIR = 'mock-exams';
+  const EXPORT_PREFIX = 'nattee-export-'; // folders made by "Download All Statements and My Solutions"
+
+  reg('nattee.createSolution', async (item) => {
+    const p = item && item.problem ? item.problem : await pickProblem();
+    if (!p) return;
+    const folder = workspaceFolder();
+    const ext = solutionExt();
+    // Reuse a solution already in the workspace (any folder) rather than making a second copy. Mock exam answers
+    // don't count: they are separate attempts.
     const [existing] = await vscode.workspace.findFiles(
-      new vscode.RelativePattern(folder, `**/${safeName(p.code)}${ext}`), '**/{node_modules,.git}/**', 1);
+      new vscode.RelativePattern(folder, `**/${safeName(p.code)}${ext}`), `**/{node_modules,.git,${MOCK_DIR},${EXPORT_PREFIX}*}/**`, 1);
     const file = existing ? existing.fsPath : solutionPath(folder.uri.fsPath, p.code, ext, cfg().get('organizeByChapter'));
     const rel = path.relative(folder.uri.fsPath, file);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`Refusing to create ${file}: it is outside the workspace folder.`);
@@ -365,7 +546,7 @@ function activate(context) {
   // file -> { problemId, source, cases, results } of the last full run, for submit's note and AI Explain.
   const lastRun = new Map();
   // The last run of this file, if it was for this problem.
-  const lastRunFor = (file, p) => { const run = lastRun.get(file); return run && p && run.problemId === p.id ? run : null; };
+  const lastRunFor = (file, p) => { const run = lastRun.get(linkKey(file)); return run && p && run.problemId === p.id ? run : null; };
   const isFailure = (r) => r.verdict !== 'PASS' && r.verdict !== 'SKIP';
   const tally = (results) => {
     const skipped = results.filter((r) => r.verdict === 'SKIP').length;
@@ -428,7 +609,7 @@ function activate(context) {
         throw e;
       }
       const t = tally(results);
-      lastRun.set(ed.document.fileName, { problemId: p.id, source, cases, results });
+      lastRun.set(linkKey(ed.document.fileName), { problemId: p.id, source, cases, results });
       updateFailureContext();
       showView(localResultsHtml(p, cases, results), `${p.code}: ${t.passed}/${t.ran}`);
       (t.passed === t.ran ? vscode.window.showInformationMessage : vscode.window.showWarningMessage)(
@@ -436,11 +617,11 @@ function activate(context) {
     });
   }
 
-  reg('nattee.runTests', () => runActive(false));
+  reg('nattee.runTests', () => { refuseInMock("the grader's tests are off"); return runActive(false); });
 
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((doc) => {
     const ed = vscode.window.activeTextEditor;
-    if (ownSave || !cfg().get('runOnSave') || !ed || ed.document !== doc || !linkedProblem(doc.fileName)) return;
+    if (ownSave || inMock() || !cfg().get('runOnSave') || !ed || ed.document !== doc || !linkedProblem(doc.fileName)) return;
     runActive(true).catch(fail);
   }));
 
@@ -449,14 +630,17 @@ function activate(context) {
     const ed = vscode.window.activeTextEditor;
     if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
     const p = linkedProblem(ed.document.fileName);
-    const cases = p ? await getTests(p) : [];
+    const allCases = p ? await getTests(p) : [];
+    const cases = inMock() ? [] : allCases; // the grader's tests are hidden during a mock exam
     const items = [
       ...cases.map((c, i) => ({ label: `Test ${i + 1}`, description: c.input.split('\n')[0].slice(0, 60), kind: 'test', i })),
-      { label: '$(edit) Custom input (type it)', kind: 'typed' },
-      { label: '$(clippy) Custom input (from clipboard)', kind: 'clipboard' },
+      { label: '$(terminal) Type the input yourself in the terminal', description: 'line by line, like in Thonny', kind: 'terminal' },
+      { label: '$(edit) Custom input in one line', description: 'write \\n for a new line', kind: 'typed' },
+      { label: '$(clippy) Custom input from the clipboard', kind: 'clipboard' },
     ];
     const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Which input to run?' });
     if (!pick) return;
+    if (pick.kind === 'terminal') return vscode.commands.executeCommand('nattee.runInTerminal');
     let input, expected, title;
     if (pick.kind === 'test') {
       const tc = cases[pick.i];
@@ -472,7 +656,7 @@ function activate(context) {
     }
     if (!input.endsWith('\n')) input += '\n';
     await saveQuietly(ed.document);
-    const files = cases.length ? cases[0].files : undefined; // so custom input can name /data/... files too
+    const files = allCases.length ? allCases[0].files : undefined; // so custom input can name /data/... files too
     const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Running...' },
       () => runSingle(ed.document.fileName, input, runCfg(), files));
     showView(singleResultHtml(title, input, expected, r), title);
@@ -484,6 +668,7 @@ function activate(context) {
     if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
     const p = linkedProblem(ed.document.fileName);
     if (!p) throw new Error('This file is not linked to a problem. Use "Nattee: Link Current File to Problem".');
+    refuseInMock('submitting is off');
     await saveQuietly(ed.document);
     const source = ed.document.getText();
     if (!source.trim()) throw new Error('The file is empty.');
@@ -539,6 +724,7 @@ function activate(context) {
   // Sends the first few failures together (they usually share one bug), so there's nothing to
   // pick. Only runs when this command is invoked, never automatically.
   reg('nattee.explainFailure', async () => {
+    refuseInMock('the AI is off');
     const ed = vscode.window.activeTextEditor;
     if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
     const p = linkedProblem(ed.document.fileName);
@@ -574,12 +760,194 @@ function activate(context) {
     showView(explanationHtml(title, notes.join(' ') || null, text), `AI explanation (${answeredBy})`);
   });
 
+  // -------------------------------------------------------- run in terminal
+  // Runs the file in VS Code's terminal, so the student types the input line by line, like in Thonny's shell.
+  // The extension starts the program itself (no shell, so no quoting problems on any OS) and keeps the terminal
+  // open when it ends, so its output and any error stay on screen.
+  const runTerminals = new Map(); // file -> its Run in Terminal terminal
+  reg('nattee.runInTerminal', async () => {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.document.uri.scheme !== 'file') throw new Error('Open a solution file first.');
+    const file = ed.document.fileName;
+    if (!SOURCE_EXTS.includes(path.extname(file).toLowerCase())) throw new Error('Run in Terminal works for .py, .cpp and .c files.');
+    await saveQuietly(ed.document);
+    const p = linkedProblem(file);
+    // The problem's data files (e.g. /data/data.txt) come with the test cases; the real exam has them too.
+    const files = p && hasTests(p) ? ((await getTests(p))[0] || {}).files : undefined;
+    let prep;
+    try {
+      prep = await terminalCommand(file, runCfg());
+    } catch (e) {
+      if (e.details) { vscode.window.showErrorMessage(`Nattee: ${e.message}\n${e.details.slice(0, 400)}`); return; }
+      throw e;
+    }
+    let box = null;
+    try { box = dataSandbox(files); } catch (e) { prep.cleanup(); throw e; }
+    // Running again replaces the last run of this file (stopping it if it is still waiting for input).
+    if (runTerminals.has(file)) runTerminals.get(file).dispose();
+    const dataName = box && Object.keys(files)[0];
+    const term = vscode.window.createTerminal({
+      name: `Run ${path.basename(file)}`,
+      pty: programTerminal({
+        cmd: prep.cmd, args: prep.args, cwd: box ? box.dir : path.dirname(file), kill: killTree,
+        env: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' },
+        intro: `Running ${path.basename(file)}: type the input and press Enter. Ctrl+C stops it.`
+          + (dataName ? `\nThis problem's data files are here: where it says /data/${dataName}, type data/${dataName}.` : ''),
+        onExit: () => { prep.cleanup(); if (box) box.cleanup(); },
+      }),
+    });
+    runTerminals.set(file, term);
+    term.show();
+  });
+  context.subscriptions.push(vscode.window.onDidCloseTerminal((t) => {
+    for (const [f, x] of runTerminals) if (x === t) runTerminals.delete(f);
+  }));
+
+  // -------------------------------------------------------------- mock exam
+  // A timed practice exam from the grader's problems. Until hand-in it is like the real exam (Thonny, no grader):
+  // no tests, no AI, no submit, only running your own input. At hand-in every answer is marked with the tests.
+  const mockStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
+  mockStatus.command = 'nattee.handInMockExam';
+  mockStatus.tooltip = 'Hand in the mock exam now';
+  context.subscriptions.push(mockStatus);
+  let mockTimer = null, handingIn = false, warned = false;
+
+  function startMockUi() {
+    vscode.commands.executeCommand('setContext', 'nattee.mockExam', true);
+    const tick = () => {
+      const m = mock();
+      if (!m) { stopMockUi(); return; }
+      const left = m.deadline - Date.now();
+      if (left <= 0) { stopMockUi(); handIn(true).catch(fail); return; }
+      if (left <= 5 * 60000 && !warned) {
+        warned = true;
+        vscode.window.showWarningMessage('Nattee: 5 minutes left in your mock exam.');
+      }
+      mockStatus.text = `$(watch) ${clock(left)} left · Hand in`;
+      mockStatus.show();
+    };
+    clearInterval(mockTimer);
+    warned = false;
+    tick();
+    mockTimer = setInterval(tick, 1000);
+    if (mockTimer.unref) mockTimer.unref();
+    updateEditorState();
+  }
+
+  function stopMockUi() {
+    clearInterval(mockTimer);
+    mockTimer = null;
+    mockStatus.hide();
+    vscode.commands.executeCommand('setContext', 'nattee.mockExam', false);
+  }
+
+  reg('nattee.startMockExam', async () => {
+    if (inMock()) throw new Error('A mock exam is already running. Hand it in first ("Nattee: Hand In Mock Exam").');
+    const folder = workspaceFolder();
+    if (!problems.length) await refreshProblems();
+    const groups = [...new Set(problems.filter(hasTests).map(groupOf))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+    if (!groups.length) throw new Error('There are no problems with test cases to make a mock exam from.');
+    const chosenGroups = await vscode.window.showQuickPick(groups.map((g) => ({ label: g, picked: /^Exam/.test(g) })),
+      { canPickMany: true, placeHolder: 'Mock exam: take problems from which chapters or exams?', ignoreFocusOut: true });
+    if (!chosenGroups || !chosenGroups.length) return;
+    const count = await vscode.window.showQuickPick([1, 2, 3, 4, 5].map((n) => ({ label: `${n} problem${n > 1 ? 's' : ''}`, n })),
+      { placeHolder: 'How many problems?', ignoreFocusOut: true });
+    if (!count) return;
+    const time = await vscode.window.showQuickPick([30, 60, 90, 120, 150].map((m) => ({ label: `${m} minutes`, m })),
+      { placeHolder: 'How long? (Exam 1 was 150 minutes for 4 problems)', ignoreFocusOut: true });
+    if (!time) return;
+    const chosen = pickProblems(problems, chosenGroups.map((g) => g.label), count.n, groupOf);
+    if (!chosen.length) throw new Error('No problems with test cases in those groups.');
+    // Statements and tests are downloaded now, so a network or grader problem shows up before the clock starts.
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Preparing your mock exam...' },
+      () => Promise.all(chosen.map((p) => Promise.all([getStatement(p), getTests(p)])))).catch((e) => {
+      throw new Error(`couldn't get the mock exam's problems (${e.message}). Tip: press Download All for Offline while the grader site is up, then mocks work without it.`);
+    });
+    let dir = path.join(folder.uri.fsPath, MOCK_DIR, stamp(new Date()));
+    for (let n = 2; fs.existsSync(dir); n++) dir = path.join(folder.uri.fsPath, MOCK_DIR, `${stamp(new Date())}-${n}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const items = [];
+    for (const p of chosen) {
+      const file = path.join(dir, `${safeName(p.code)}${solutionExt()}`);
+      fs.writeFileSync(file, '');
+      await setLink(file, p.id);
+      items.push({ id: p.id, code: p.code, file });
+    }
+    const now = Date.now();
+    await context.globalState.update('nattee.mock', { started: now, deadline: now + time.m * 60000, minutes: time.m, items });
+    startMockUi();
+    for (const it of [...items].reverse()) await vscode.window.showTextDocument(vscode.Uri.file(it.file), { preview: false });
+    updateEditorState();
+    await showStatement(chosen[0]);
+    vscode.window.showInformationMessage(`Nattee: mock exam started - ${items.length} problem${items.length > 1 ? 's' : ''}, ${time.m} minutes. `
+      + 'Tests, AI and submit are off until you hand in; use Run in Terminal to try your own input. Click the timer to hand in early.');
+  });
+
+  // Marks every answer with the grader's tests, shows the report and turns the help back on.
+  // auto: the time ran out (no question asked).
+  async function handIn(auto) {
+    const m = mock();
+    if (!m) throw new Error('No mock exam is running.');
+    if (!auto) {
+      const choice = await vscode.window.showWarningMessage('Hand in your mock exam now?',
+        { modal: true, detail: `${clock(m.deadline - Date.now())} left. Your answers will be marked with the grader's tests.` }, 'Hand In');
+      if (choice !== 'Hand In') return;
+    }
+    if (handingIn) return;
+    handingIn = true;
+    try {
+      stopMockUi();
+      await context.globalState.update('nattee.mock', undefined);
+      const mine = (f) => m.items.some((it) => linkKey(it.file) === linkKey(f));
+      for (const doc of vscode.workspace.textDocuments || []) if (doc.isDirty && mine(doc.fileName)) await saveQuietly(doc);
+      const minutesUsed = Math.max(1, Math.round((Math.min(Date.now(), m.deadline) - m.started) / 60000));
+      const marked = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Marking your mock exam...' }, async () => {
+        const out = [];
+        for (const it of m.items) {
+          const p = problems.find((x) => x.id === it.id) || { id: it.id, code: it.code, name: it.code };
+          let source = '';
+          try { source = fs.readFileSync(it.file, 'utf8'); } catch { /* deleted */ }
+          if (!source.trim()) { out.push({ code: it.code, note: 'Not attempted' }); continue; }
+          try {
+            const cases = await getTests(p);
+            const results = await runTests(it.file, cases, runCfg());
+            lastRun.set(linkKey(it.file), { problemId: p.id, source, cases, results });
+            out.push({ code: it.code, cases, results });
+          } catch (e) {
+            out.push({ code: it.code, note: e.details ? `${e.message}: ${e.details.split('\n')[0]}` : e.message });
+          }
+        }
+        return out;
+      });
+      const summary = summarize(marked);
+      const history = [...context.globalState.get('nattee.mockHistory', []),
+        { date: Date.now(), percent: summary.percent, codes: m.items.map((it) => it.code), minutesUsed, minutes: m.minutes }].slice(-20);
+      await context.globalState.update('nattee.mockHistory', history);
+      showView(mockReportHtml(summary, { minutesUsed, minutes: m.minutes, history }), `Mock exam: ${summary.percent}%`);
+      updateEditorState();
+      vscode.window.showInformationMessage(`Nattee: ${auto ? 'time is up. ' : ''}Mock exam marked: ${summary.percent}%. `
+        + 'Tests and AI are back on, so you can look at what went wrong.');
+    } finally {
+      handingIn = false;
+    }
+  }
+
+  reg('nattee.handInMockExam', () => handIn(false));
+
   // ------------------------------------------------------------------ start
   loadCachedProblems();
   updateEditorState();
+  if (inMock()) {
+    // VS Code was closed during a mock: carry on, or mark it if the time ran out meanwhile.
+    if (mock().deadline <= Date.now()) handIn(true).catch(fail); else startMockUi();
+  }
   signedInHere().then(async (ok) => {
     await setLoggedIn(ok);
-    if (ok) refreshProblems().catch(() => {}); // keeps the solved/score marks current
+    // keeps the solved/score marks current; if that fails, say so instead of quietly showing an old list
+    if (ok) {
+      refreshProblems().catch((e) => vscode.window.showWarningMessage(
+        `Nattee: couldn't load the problem list (${e.message}). Showing the last saved list - press Refresh to try again.`));
+    }
     updateEditorState();
     tree.fire();
   });

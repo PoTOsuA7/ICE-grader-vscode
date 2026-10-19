@@ -79,11 +79,12 @@ test('small tests come from the page without downloading anything', async () => 
   } finally { g.restore(); }
 });
 
-test('a cut-off file is downloaded in full when the grader allows it', async () => {
-  const g = fakeGrader(pageHtml(pane(7, ['50 KB', big], ['3 Bytes', 'ok\n'])), true);
+test('the test download links the instructors turned off are never requested, even if they worked', async () => {
+  const g = fakeGrader(pageHtml(pane(7, ['50 KB', big], ['50 KB', big])), true);
   try {
     const [c] = await new GraderClient('https://grader.test/').fetchTestcases(1);
-    assert.deepStrictEqual(c, { input: 'full file\n', output: 'ok\n' });
+    assert.deepStrictEqual(c, { input: big, output: big, partialInput: true, partialOutput: true });
+    assert.deepStrictEqual(g.asked, ['/testcases/show_problem/1']);
   } finally { g.restore(); }
 });
 

@@ -52,12 +52,10 @@ const SKIP_NOTE = '<div class="hint">The grader only shows the start of this tes
 const SKIP_OUTPUT_NOTE = '<div class="hint">The grader shows too little of this test\'s expected output to check it here. Submit to check it.</div>';
 const PARTIAL_NOTE = '<div class="hint">The grader only shows the start of the expected output, so only those lines were checked.</div>';
 
-// results: from runTests(); cases: [{input, output, partialInput?, partialOutput?}]
-function localResultsHtml(problem, cases, results) {
-  const passed = results.filter((r) => r.verdict === 'PASS').length;
-  const skipped = results.filter((r) => r.verdict === 'SKIP').length;
+// One collapsible row per test, the first failing one open.
+function testRows(cases, results) {
   const firstBad = results.findIndex((r) => r.verdict !== 'PASS' && r.verdict !== 'SKIP');
-  const rows = results.map((r, i) => {
+  return results.map((r, i) => {
     const tc = cases[i];
     const cmp = comparedOutputs(tc, r.stdout);
     const extra = r.verdict === 'FAIL' ? diffHtml(cmp.expected, cmp.actual)
@@ -73,6 +71,13 @@ function localResultsHtml(problem, cases, results) {
       </div>${r.stderr ? `<h4>stderr</h4><pre class="err">${esc(clip(r.stderr))}</pre>` : ''}
     </details>`;
   }).join('');
+}
+
+// results: from runTests(); cases: [{input, output, partialInput?, partialOutput?}]
+function localResultsHtml(problem, cases, results) {
+  const passed = results.filter((r) => r.verdict === 'PASS').length;
+  const skipped = results.filter((r) => r.verdict === 'SKIP').length;
+  const rows = testRows(cases, results);
   const files = cases[0] && cases[0].files ? Object.keys(cases[0].files) : [];
   const filesNote = files.length ? `<div class="ms">Data files from the grader: ${files.map(esc).join(', ')}. Paths like /data/${esc(files[0])} in the input point to them.</div>` : '';
   return page(`<div class="sum"><b>${esc(problem.code)}</b> — ${passed}/${results.length - skipped} passed${skipped ? ` <span class="ms">(${skipped} skipped)</span>` : ''}</div>${filesNote}${rows}`);
@@ -105,6 +110,22 @@ function submissionHtml(problem, id, g) {
 
 const emptyHtml = () => page('Save a linked solution file (or press ▶) to see test results here.');
 
+// The marked mock exam. summary: from mockExam.summarize(); items also carry cases/results when they ran.
+// history: [{ date, percent, minutesUsed }] of all mocks so far, this one last.
+function mockReportHtml(summary, { minutesUsed, minutes, history = [] }) {
+  const rows = summary.per.map((it) => `<tr><td><b>${esc(it.code)}</b></td><td>${it.note ? esc(it.note)
+    : `${it.passed}/${it.ran} tests`}</td><td style="text-align:right">${it.note ? '0' : Math.round(it.fraction * 100)}%</td></tr>`).join('');
+  const day = (t) => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const past = history.length > 1
+    ? `<div class="ms" style="margin:8px 0">Your mock exams: ${history.map((h) => `${esc(day(h.date))} ${h.percent}%`).join(' → ')}</div>` : '';
+  const details = summary.per.map((it) => `<h4>${esc(it.code)}</h4>${it.results ? testRows(it.cases, it.results)
+    : `<div class="hint">${esc(it.note || 'Not marked')}</div>`}`).join('');
+  return page(`<div class="sum">Mock exam: <b>${summary.percent}%</b> <span class="ms">${minutesUsed} of ${minutes} minutes used</span></div>
+    <table style="width:100%;border-collapse:collapse">${rows}</table>${past}
+    <div class="hint">Unofficial: marked here with the tests the grader shows. Tests it shows only partly are skipped, and the time limit is your computer's, not the grader's.</div>
+    ${details}`);
+}
+
 // Minimal, safe formatting for the model's plain-text reply: escape first, then wrap
 // ``` fences and `code` spans and split into paragraphs. Never trusts the text as HTML.
 // Fenced code is pulled out before paragraph/newline handling (as a placeholder) so its
@@ -131,4 +152,4 @@ function explanationHtml(title, note, text) {
     <div class="hint" style="margin-top:12px">AI explanations can be wrong, and this one only explains the bug - it will not write the fix for you.</div>`);
 }
 
-module.exports = { localResultsHtml, singleResultHtml, submissionHtml, explanationHtml, emptyHtml, diffHtml, esc };
+module.exports = { localResultsHtml, singleResultHtml, submissionHtml, explanationHtml, emptyHtml, mockReportHtml, diffHtml, esc };

@@ -42,6 +42,9 @@ function statementHtml(webview, statementPath, libDir) {
 <script src="${pdfJsUri}"></script>
 <script>
   const pdfjsLib = window['pdfjs-dist/build/pdf'];
+  const vscodeApi = acquireVsCodeApi();
+  let docLoaded;
+  const docReady = new Promise((resolve) => { docLoaded = resolve; }); // the PDF, or null if it failed to load
 
   const statusEl = document.getElementById('status');
   const container = document.getElementById('container');
@@ -156,6 +159,54 @@ function statementHtml(webview, statementPath, libDir) {
   document.addEventListener('mouseup', stopPanning);
   window.addEventListener('blur', stopPanning);
 
+  // The Copy button: the extension asks for the statement's text, page by page ('getText'), or, when part of it is
+  // drawn rather than written, for every page as one picture ('getImage'). pdf.js has the PDF open here already.
+  window.addEventListener('message', async (e) => {
+    const ask = e.data;
+    if (!ask || (ask.type !== 'getText' && ask.type !== 'getImage')) return;
+    const reply = ask.type === 'getText' ? 'text' : 'image';
+    try {
+      const doc = await docReady;
+      if (!doc) throw new Error('the statement did not load');
+      const pages = await Promise.all(Array.from({ length: doc.numPages }, (_, i) => doc.getPage(i + 1)));
+      if (ask.type === 'getText') {
+        const texts = [];
+        for (const page of pages) {
+          const content = await page.getTextContent();
+          texts.push(content.items.map((it) => it.str + (it.hasEOL ? '\\n' : '')).join(''));
+        }
+        vscodeApi.postMessage({ type: reply, id: ask.id, pages: texts });
+        return;
+      }
+      // The pages side by side in rows (left to right, then down) on white, so the picture stays about square:
+      // AI and chat apps shrink a big picture to fit a box, and a long strip of pages would come out too thin to
+      // read. Sharp (twice the size) but at most 4000 px a side.
+      const sizes = pages.map((p) => p.getViewport({ scale: 1 }));
+      const cellW = Math.max(...sizes.map((v) => v.width));
+      const cellH = Math.max(...sizes.map((v) => v.height));
+      const cols = Math.max(1, Math.round(Math.sqrt(pages.length * cellH / cellW)));
+      const rows = Math.ceil(pages.length / cols);
+      const s = Math.min(2, 4000 / Math.max(cols * cellW, rows * cellH));
+      const out = document.createElement('canvas');
+      out.width = Math.ceil(cols * cellW * s);
+      out.height = Math.ceil(rows * cellH * s);
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, out.width, out.height);
+      for (let i = 0; i < pages.length; i++) {
+        const viewport = pages[i].getViewport({ scale: s });
+        const c = document.createElement('canvas');
+        c.width = Math.ceil(viewport.width);
+        c.height = Math.ceil(viewport.height);
+        await pages[i].render({ canvasContext: c.getContext('2d'), viewport }).promise;
+        ctx.drawImage(c, Math.round((i % cols) * cellW * s), Math.round(Math.floor(i / cols) * cellH * s));
+      }
+      vscodeApi.postMessage({ type: reply, id: ask.id, png: out.toDataURL('image/png') });
+    } catch (err) {
+      vscodeApi.postMessage({ type: reply, id: ask.id, error: err.message });
+    }
+  });
+
   (async () => {
     try {
       const workerBlob = await fetch("${pdfWorkerUri}").then((r) => r.blob());
@@ -163,6 +214,7 @@ function statementHtml(webview, statementPath, libDir) {
 
       const pdfArrayBuffer = await fetch("${pdfUri}").then((r) => r.arrayBuffer());
       pdfDoc = await pdfjsLib.getDocument({ data: pdfArrayBuffer }).promise;
+      docLoaded(pdfDoc);
 
       clearTimeout(loadTimeout);
       statusEl.remove();
@@ -170,6 +222,7 @@ function statementHtml(webview, statementPath, libDir) {
       await renderAll();
     } catch (err) {
       clearTimeout(loadTimeout);
+      docLoaded(null);
       statusEl.textContent = 'Failed to load statement: ' + err.message;
     }
   })();

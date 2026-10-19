@@ -2,7 +2,7 @@
   "name": "nattee-grader",
   "displayName": "ICE Nattee Grader",
   "description": "NatteeGrader (Chula 2190101) in VS Code: problem statements, test cases, run, submit and see your progress",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "publisher": "potosua7",
   "icon": "icon.png",
   "galleryBanner": {
@@ -86,13 +86,33 @@
         "title": "Nattee: Clear Cache (re-download statements and tests)"
       },
       {
+        "command": "nattee.downloadAll",
+        "title": "Nattee: Download All for Offline",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "nattee.exportAll",
+        "title": "Nattee: Download All Statements and My Solutions"
+      },
+      {
+        "command": "nattee.copyStatement",
+        "title": "Nattee: Copy Statement Text",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "nattee.saveStatement",
+        "title": "Nattee: Save Statement As...",
+        "icon": "$(save-as)"
+      },
+      {
         "command": "nattee.openProblem",
         "title": "Nattee: Open Statement",
         "icon": "$(book)"
       },
       {
         "command": "nattee.createSolution",
-        "title": "Nattee: Create Solution File"
+        "title": "Nattee: Create Solution File",
+        "icon": "$(new-file)"
       },
       {
         "command": "nattee.linkFile",
@@ -117,6 +137,21 @@
         "title": "Nattee: Run One Test or Custom Input"
       },
       {
+        "command": "nattee.runInTerminal",
+        "title": "Nattee: Run in Terminal (type the input yourself)",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "nattee.startMockExam",
+        "title": "Nattee: Start Mock Exam",
+        "icon": "$(watch)"
+      },
+      {
+        "command": "nattee.handInMockExam",
+        "title": "Nattee: Hand In Mock Exam",
+        "icon": "$(check)"
+      },
+      {
         "command": "nattee.explainFailure",
         "title": "Nattee: Explain Test Failure (AI)",
         "icon": "$(sparkle)"
@@ -136,9 +171,29 @@
           "command": "nattee.refresh",
           "when": "view == nattee.problems",
           "group": "navigation"
+        },
+        {
+          "command": "nattee.downloadAll",
+          "when": "view == nattee.problems && nattee.loggedIn",
+          "group": "navigation"
+        },
+        {
+          "command": "nattee.startMockExam",
+          "when": "view == nattee.problems && nattee.loggedIn && !nattee.mockExam",
+          "group": "navigation"
+        },
+        {
+          "command": "nattee.handInMockExam",
+          "when": "view == nattee.problems && nattee.mockExam",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
+        {
+          "command": "nattee.createSolution",
+          "when": "viewItem == problem",
+          "group": "inline"
+        },
         {
           "command": "nattee.openProblem",
           "when": "viewItem == problem",
@@ -151,18 +206,33 @@
       ],
       "editor/title": [
         {
+          "command": "nattee.copyStatement",
+          "when": "activeWebviewPanelId == 'natteeStatement' && !nattee.mockExam",
+          "group": "navigation"
+        },
+        {
+          "command": "nattee.saveStatement",
+          "when": "activeWebviewPanelId == 'natteeStatement'",
+          "group": "navigation"
+        },
+        {
           "command": "nattee.runTests",
+          "when": "nattee.activeFileLinked && !nattee.mockExam",
+          "group": "navigation"
+        },
+        {
+          "command": "nattee.runInTerminal",
           "when": "nattee.activeFileLinked",
           "group": "navigation"
         },
         {
           "command": "nattee.submit",
-          "when": "nattee.activeFileLinked",
+          "when": "nattee.activeFileLinked && !nattee.mockExam",
           "group": "navigation"
         },
         {
           "command": "nattee.explainFailure",
-          "when": "nattee.hasFailure",
+          "when": "nattee.hasFailure && !nattee.mockExam",
           "group": "navigation"
         }
       ]
