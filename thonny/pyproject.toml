@@ -4,14 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thonny-ice-grader"
-version = "0.1.0"
+version = "0.2.0"
 description = "NatteeGrader (Chula 2190101) in Thonny: your problems, statements, the grader's tests and submit"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "PoTOsuA7" }]
 requires-python = ">=3.8"
 # Thonny's plug-in manager only installs a "thonny-" package that names the Thonny it needs.
-dependencies = ["thonny>=4.0"]
+# pypdfium2 draws the statements (its builds need macOS 13+, i.e. Darwin 22; older Macs open them in the PDF app),
+# keyring keeps the password and the Gemini key in the computer's password store.
+dependencies = [
+    "thonny>=4.0",
+    'pypdfium2>=4.30; sys_platform != "darwin" or platform_release >= "22"',
+    "keyring>=23",
+]
 keywords = ["thonny", "thonny-plugin", "grader", "nattee", "chulalongkorn"]
 classifiers = [
     "Programming Language :: Python :: 3",

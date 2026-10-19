@@ -4,6 +4,7 @@ worker thread."""
 import json
 import os
 import re
+import shutil
 import threading
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import runner
 from .client import GraderClient, GraderError, SessionExpired
 from .layout import safe_name, chapter_of
+from .passwords import KeyringSecrets
 
 DEFAULT_ROOT = "https://2190101.nattee.net/"
 TESTS_FILE = "tests.v1.json"
@@ -21,17 +23,21 @@ class NotSignedIn(GraderError):
 
 
 class Core:
-    def __init__(self, data_dir, root_url=DEFAULT_ROOT, client_class=GraderClient):
+    def __init__(self, data_dir, root_url=DEFAULT_ROOT, client_class=GraderClient, secrets=None):
         self.root = root_url
-        self.dir = os.path.join(data_dir, urllib.parse.urlsplit(root_url).netloc or "grader")
+        self.host = urllib.parse.urlsplit(root_url).netloc or "grader"
+        self.dir = os.path.join(data_dir, self.host)
         os.makedirs(self.dir, exist_ok=True)
         self._client_class = client_class
+        self.secrets = secrets or KeyringSecrets()
         self._lock = threading.RLock()
-        self._password = None  # kept in memory only, to sign in again when the session runs out
+        self._password = None  # this session's copy; the saved one is in the computer's password store
+        self.remembered = False  # whether the password store kept it
         session = self._read_json("session.json") or {}
         self.uid = session.get("uid")
         self.client = client_class(root_url, session.get("cookies")) if self.uid else None
         self.problems = self._read_json("problems.json") or []
+        self.links = self._read_json("links.json") or {}  # file -> problem id, for files not named after a problem
 
     # ---- files
 
@@ -61,16 +67,24 @@ class Core:
     def signed_in(self):
         return self.client is not None
 
+    def _secret_name(self, uid=None):
+        return "grader:%s:%s" % (self.host, uid or self.uid)
+
     def sign_in(self, uid, password):
         client = self._client_class(self.root)
         client.login(uid, password)
         with self._lock:
+            if self.uid and self.uid != uid:
+                self.secrets.delete(self._secret_name())
             self.client, self.uid, self._password = client, uid, password
             self._save_session()
+            self.remembered = self.secrets.set(self._secret_name(), password)
         return self.refresh_problems()
 
     def sign_out(self):
         with self._lock:
+            if self.uid:
+                self.secrets.delete(self._secret_name())
             self.client, self.uid, self._password = None, None, None
             try:
                 os.remove(self._path("session.json"))
@@ -78,16 +92,22 @@ class Core:
                 pass
 
     def _call(self, fn):
-        """fn(client), signing in again once if the session ran out and the password is known this session."""
+        """fn(client), signing in again once with the remembered password if the grader's session ran out."""
         if not self.client:
             raise NotSignedIn("Sign in to the grader first.")
         try:
             result = fn(self.client)
         except SessionExpired:
-            if not self._password:
+            password = self._password or self.secrets.get(self._secret_name())
+            if not password:
                 self.sign_out()
                 raise
-            self.client.login(self.uid, self._password)
+            try:
+                self.client.login(self.uid, password)
+            except GraderError:  # the password was changed on the grader
+                self.sign_out()
+                raise SessionExpired("The grader signed you out and your saved password no longer works - sign in again.")
+            self._password = password
             result = fn(self.client)
         with self._lock:
             if self.client:
@@ -103,12 +123,38 @@ class Core:
             self._write_json(problems, "problems.json")
         return problems
 
+    @staticmethod
+    def _link_key(filename):
+        return os.path.normcase(os.path.abspath(filename))
+
+    def link(self, filename, p):
+        """From now on this file belongs to problem p, whatever its name."""
+        with self._lock:
+            self.links[self._link_key(filename)] = p["id"]
+            self._write_json(self.links, "links.json")
+
     def problem_for_file(self, filename):
-        """A file named after a problem code (05_List_15.py) belongs to that problem."""
+        """The problem a file was linked to, else the one it is named after (05_List_15.py)."""
         if not filename:
             return None
+        linked = self.links.get(self._link_key(filename))
+        if linked:
+            p = next((p for p in self.problems if p["id"] == linked), None)
+            if p:
+                return p
         stem = os.path.splitext(os.path.basename(filename))[0].lower()
         return next((p for p in self.problems if safe_name(p["code"]).lower() == stem or p["code"].lower() == stem), None)
+
+    def clipboard_copy(self, p):
+        """A copy of the statement named after the problem (06_Func_21.pdf), for putting on the clipboard. It stays
+        until the next copy, so it can still be pasted later."""
+        source = self.statement_path(p)
+        folder = self._path("clipboard")
+        shutil.rmtree(folder, ignore_errors=True)
+        os.makedirs(folder, exist_ok=True)
+        target = os.path.join(folder, safe_name(p["code"]) + os.path.splitext(source)[1])
+        shutil.copyfile(source, target)
+        return target
 
     def statement_path(self, p):
         """The statement file, downloaded once and then read from the saved copy."""

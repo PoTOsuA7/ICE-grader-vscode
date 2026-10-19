@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from thonnycontrib.ice_grader.client import GraderClient, GraderError, SessionExpired
 from thonnycontrib.ice_grader.core import Core, NotSignedIn
+from thonnycontrib.ice_grader.passwords import MemorySecrets
 from test_pages import FORM, field, page, pane, row, tile
 
 LOGIN_PAGE = '<form action="/login/login"><input name="authenticity_token" value="t&amp;1"><input name="password"></form>'
@@ -191,8 +192,9 @@ class Saved(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def core(self):
-        return Core(self.dir, "https://grader.test/", FakeClient)
+    def core(self, secrets=None):
+        # never the real password store: a test must not write to the computer's Credential Manager / Keychain
+        return Core(self.dir, "https://grader.test/", FakeClient, secrets if secrets is not None else MemorySecrets())
 
     def test_sign_in_is_remembered_without_the_password(self):
         c = self.core()
@@ -224,18 +226,67 @@ class Saved(unittest.TestCase):
             c.refresh_problems()
         self.assertEqual(len(self.core().problems), 2)
 
-    def test_an_expired_session_signs_in_again_with_the_password_from_this_session(self):
-        c = self.core()
+    def test_an_expired_session_signs_in_again_with_the_remembered_password(self):
+        store = MemorySecrets()
+        c = self.core(store)
         c.sign_in("u", "pw")
+        self.assertTrue(c.remembered)
+        self.assertEqual(store.values, {"grader:grader.test:u": "pw"})
         FakeClient.calls.clear()
         FakeClient.expired = True
         c.refresh_problems()
         self.assertEqual(FakeClient.calls, ["list", "login", "list"])
-        later = self.core()  # Thonny restarted: the password is not known
+        restarted = self.core(store)  # Thonny restarted: the password comes from the password store
+        FakeClient.calls.clear()
+        FakeClient.expired = True
+        restarted.refresh_problems()
+        self.assertEqual(FakeClient.calls, ["list", "login", "list"])
+        restarted.sign_out()
+        self.assertEqual(store.values, {})
+        self.assertFalse(self.core(store).signed_in)
+
+    def test_without_a_password_store_an_expired_session_means_signing_in_again(self):
+        class NoStore(MemorySecrets):
+            def set(self, name, value):
+                return False
+        c = self.core(NoStore())
+        c.sign_in("u", "pw")
+        self.assertFalse(c.remembered)
+        restarted = self.core(NoStore())
         FakeClient.expired = True
         with self.assertRaises(SessionExpired):
-            later.refresh_problems()
-        self.assertFalse(later.signed_in)
+            restarted.refresh_problems()
+        self.assertFalse(restarted.signed_in)
+
+    def test_a_password_changed_on_the_grader_signs_you_out(self):
+        store = MemorySecrets()
+        self.core(store).sign_in("u", "pw")
+        store.values["grader:grader.test:u"] = "old"
+        restarted = self.core(store)
+        FakeClient.expired = True
+        with self.assertRaisesRegex(SessionExpired, "no longer works"):
+            restarted.refresh_problems()
+        self.assertFalse(restarted.signed_in)
+
+    def test_any_file_can_be_linked_to_a_problem(self):
+        c = self.core()
+        c.sign_in("u", "pw")
+        mine = os.path.join(self.dir, "homework", "my answer.py")
+        self.assertIsNone(c.problem_for_file(mine))
+        c.link(mine, c.problems[1])
+        self.assertEqual(c.problem_for_file(mine)["id"], "11")
+        self.assertEqual(self.core().problem_for_file(mine)["id"], "11")  # remembered
+        c.link(os.path.join(self.dir, "05_List_15.py"), c.problems[1])  # a link wins over the name
+        self.assertEqual(c.problem_for_file(os.path.join(self.dir, "05_List_15.py"))["id"], "11")
+
+    def test_the_copied_pdf_is_named_after_the_problem(self):
+        c = self.core()
+        c.sign_in("u", "pw")
+        first = c.clipboard_copy(c.problems[0])
+        self.assertEqual(os.path.basename(first), "05_List_15.pdf")
+        second = c.clipboard_copy(c.problems[1])
+        self.assertEqual(os.path.basename(second), "Exam1-2024_Q1A_student.pdf")
+        self.assertFalse(os.path.exists(first))  # only the latest copy is kept
 
     def test_files_belong_to_the_problem_they_are_named_after(self):
         c = self.core()
