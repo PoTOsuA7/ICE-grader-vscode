@@ -24,3 +24,29 @@ jobs:
           python -c "import zipfile; n = set(zipfile.ZipFile('nattee-grader.vsix').namelist());
           need = {'extension.vsixmanifest', 'extension/package.json', 'extension/extension.js', 'extension/lib/client.js', 'extension/lib/runner.js', 'extension/README.md'};
           missing = need - n; assert not missing, missing; assert not any(x.startswith('extension/tests/') for x in n), 'tests packaged'"
+  # The Thonny plug-in (thonny/): Python 3.10 is what Thonny 4 comes with, 3.14 what Thonny 5 comes with.
+  thonny:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.14']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: thonny
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s tests -v
+        env:
+          PYTHONPATH: .
+      # The wheel must hold the plug-in (in the thonnycontrib namespace, with no __init__.py of its own) and no tests.
+      - run: python -m pip wheel . --no-deps -w dist
+      - run: >
+          python -c "import glob, zipfile; n = set(zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist());
+          need = {'thonnycontrib/ice_grader/__init__.py', 'thonnycontrib/ice_grader/client.py', 'thonnycontrib/ice_grader/runner.py'};
+          missing = need - n; assert not missing, missing; assert 'thonnycontrib/__init__.py' not in n;
+          assert not any(x.startswith('tests/') for x in n), 'tests packaged'"

@@ -9,3 +9,8 @@ problems/
 .cph/
 *.pyc
 *.vsix
+
+# Thonny plug-in build output
+thonny/build/
+thonny/dist/
+*.egg-info/

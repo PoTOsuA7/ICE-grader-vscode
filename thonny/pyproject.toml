@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thonny-ice-grader"
+version = "0.1.0"
+description = "NatteeGrader (Chula 2190101) in Thonny: your problems, statements, the grader's tests and submit"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "PoTOsuA7" }]
+requires-python = ">=3.8"
+# Thonny's plug-in manager only installs a "thonny-" package that names the Thonny it needs.
+dependencies = ["thonny>=4.0"]
+keywords = ["thonny", "thonny-plugin", "grader", "nattee", "chulalongkorn"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Education",
+    "Topic :: Education",
+]
+
+[project.urls]
+Homepage = "https://github.com/PoTOsuA7/ICE-grader-vscode"
+Source = "https://github.com/PoTOsuA7/ICE-grader-vscode/tree/main/thonny"
+
+[tool.setuptools.packages.find]
+include = ["thonnycontrib.*"]
+namespaces = true
